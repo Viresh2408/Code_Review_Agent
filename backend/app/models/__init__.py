@@ -1,13 +1,13 @@
 """
-SQLAlchemy ORM models — mirrors the schema defined in database.md §2 and §3.
+SQLAlchemy ORM models.
 
-Tables:
-  - repos
-  - pull_requests
-  - reviews
-  - findings
-  - installations
-  - debt_scores  (TimescaleDB hypertable — declared normally, hypertable created via SQL)
+Exposes:
+  - Repo
+  - PullRequest
+  - Review
+  - Finding
+  - Installation
+  - DebtScore
 """
 
 from __future__ import annotations
@@ -168,7 +168,6 @@ class DebtScore(Base):
     __table_args__ = (Index("idx_debt_repo_file", "repo_id", "file_path", "time"),)
 
     # TimescaleDB requires the time column to be part of any primary key for a hypertable.
-    # We use a composite PK here; Alembic won't auto-create the hypertable — see init_db.sql.
     time: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), primary_key=True
     )

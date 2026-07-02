@@ -16,7 +16,7 @@ from sqlalchemy import engine_from_config, pool
 # ── Load app models so Alembic can detect schema changes ─────────────────────
 # Import Base BEFORE importing models so the mapper registry is populated
 from app.db.base import Base  # noqa: F401
-from app.db.models import (  # noqa: F401
+from app.models import (  # noqa: F401
     DebtScore,
     Finding,
     Installation,
