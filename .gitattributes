@@ -1,0 +1,16 @@
+# Normalize line endings to LF in the repo, checkout as CRLF on Windows
+* text=auto eol=lf
+
+# Force LF for scripts (shell scripts would break with CRLF)
+*.sh text eol=lf
+*.sql text eol=lf
+Makefile text eol=lf
+
+# Binary files — don't touch line endings
+*.pem binary
+*.key binary
+*.p12 binary
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary

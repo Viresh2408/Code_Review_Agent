@@ -1,0 +1,58 @@
+"""
+SQLAlchemy async engine + session factory.
+
+Usage in FastAPI route:
+    async with get_session() as session:
+        result = await session.execute(select(Repo))
+
+Usage in Celery tasks (sync context):
+    Use the sync engine from alembic or a separate sync session.
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import DeclarativeBase
+
+from app.config import get_settings
+
+settings = get_settings()
+
+# ── Async engine ──────────────────────────────────────────────────────────────
+async_engine = create_async_engine(
+    settings.database_url,
+    echo=settings.app_env == "development",   # SQL logging in dev only
+    pool_size=10,
+    max_overflow=20,
+    pool_pre_ping=True,                       # auto-reconnect on stale connections
+)
+
+# ── Session factory ───────────────────────────────────────────────────────────
+AsyncSessionLocal = async_sessionmaker(
+    bind=async_engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+    autoflush=False,
+    autocommit=False,
+)
+
+
+# ── Declarative base for ORM models ──────────────────────────────────────────
+class Base(DeclarativeBase):
+    pass
+
+
+# ── Dependency / context manager ─────────────────────────────────────────────
+@asynccontextmanager
+async def get_session() -> AsyncGenerator[AsyncSession, None]:
+    """Async context manager that yields a session and handles commit/rollback."""
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise

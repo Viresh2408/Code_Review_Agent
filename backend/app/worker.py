@@ -1,0 +1,43 @@
+"""
+Celery application factory.
+
+The Celery app is instantiated here and imported by:
+  - app/tasks.py  (task definitions)
+  - docker-compose worker command: celery -A app.worker.celery_app worker ...
+"""
+
+from __future__ import annotations
+
+from celery import Celery
+
+from app.config import get_settings
+
+settings = get_settings()
+
+celery_app = Celery(
+    "codereview",
+    broker=settings.celery_broker_url,
+    backend=settings.celery_result_backend,
+    include=["app.tasks"],
+)
+
+celery_app.conf.update(
+    # Serialisation
+    task_serializer="json",
+    result_serializer="json",
+    accept_content=["json"],
+    # Reliability: retry failed tasks up to 3× with exponential back-off (NFR-2)
+    task_acks_late=True,
+    task_reject_on_worker_lost=True,
+    # Routing: all PR review jobs go to the dedicated queue
+    task_default_queue="pr_review",
+    task_queues={
+        "pr_review": {
+            "exchange": "pr_review",
+            "routing_key": "pr_review",
+        }
+    },
+    # Timezone
+    timezone="UTC",
+    enable_utc=True,
+)

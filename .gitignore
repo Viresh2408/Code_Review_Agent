@@ -1,0 +1,79 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Secrets & keys ────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# ── Alembic versions cache ────────────────────────────────────────────────────
+backend/migrations/versions/*.pyc
+
+# ── Node / Dashboard ─────────────────────────────────────────────────────────
+node_modules/
+.next/
+out/
+.turbo/
+dashboard/.env
+dashboard/.env.local
+dashboard/.env.production
+
+# ── Docker ───────────────────────────────────────────────────────────────────
+# (docker-compose.override.yml is intentionally NOT ignored — commit it)
+
+# ── IDE / OS ──────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ── Chroma local data ────────────────────────────────────────────────────────
+chroma_data/
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Locust ───────────────────────────────────────────────────────────────────
+locust_results*.csv
