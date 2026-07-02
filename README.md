@@ -154,8 +154,8 @@ code-review-agent/
 |---|---|---|
 | **0** | Setup: Docker, webhook receiver, DB schema | ✅ Done |
 | **1** | Ingestion: HMAC, Celery, diff fetch, tree-sitter AST | ✅ Done |
-| **2** | First agent: Security Agent + inline PR comments | 🔜 Next |
-| **3** | All 4 agents + Neo4j blast-radius graph | ⏳ |
+| **2** | First agent: Security Agent + inline PR comments | ✅ Done |
+| **3** | All 4 agents + Neo4j blast-radius graph | 🔜 Next |
 | **4** | RAG: repo conventions retrieval into agent prompts | ⏳ |
 | **5** | TimescaleDB debt tracking + Next.js dashboard | ⏳ |
 | **6** | Fine-tuning + vLLM + hybrid cost routing | ⏳ |
