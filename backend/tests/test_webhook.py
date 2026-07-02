@@ -151,7 +151,10 @@ def test_task_idempotency_not_duplicate():
     mock_session.execute.return_value.scalar_one_or_none.return_value = None
 
     with patch("app.tasks.review_job.get_session") as mock_get_session, \
-         patch("app.parser.pipeline.ingest_pr") as mock_ingest_pr:
+         patch("app.parser.pipeline.ingest_pr") as mock_ingest_pr, \
+         patch("app.tasks.review_job.update_pr_status") as mock_update_status, \
+         patch("agents.orchestrator.graph.invoke") as mock_graph_invoke, \
+         patch("agents.orchestrator.post_findings_to_github") as mock_post_findings:
         # get_session is an async context manager
         mock_get_session.return_value.__aenter__.return_value = mock_session
 
@@ -159,6 +162,11 @@ def test_task_idempotency_not_duplicate():
         mock_context = MagicMock()
         mock_context.changed_files = [MagicMock()]
         mock_ingest_pr.return_value = mock_context
+
+        # Mock graph.invoke to return a state with some findings
+        mock_result_state = MagicMock()
+        mock_result_state.findings = [MagicMock()]
+        mock_graph_invoke.return_value = mock_result_state
 
         # Push mock context to Celery's request stack to simulate running task context
         from celery.app.task import Context
@@ -172,10 +180,11 @@ def test_task_idempotency_not_duplicate():
         finally:
             process_pr_review.request_stack.pop()
 
-        assert result["status"] == "ingested"
+        assert result["status"] == "completed"
         assert result["repo"] == "owner/repo"
         assert result["pr_number"] == 1
         assert result["changed_files_count"] == 1
+        assert result["findings_count"] == 1
 
 
 def test_task_idempotency_is_duplicate():
