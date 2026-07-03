@@ -179,6 +179,28 @@ def process_pr_review(
         post_findings_to_github(pr_context, findings)
         log.info("pr_review_task_posting_completed")
 
+        # Save review results, findings, and debt scores to the database within a transaction
+        try:
+            if "/" in repo_full_name:
+                owner, name = repo_full_name.split("/", 1)
+                from app.db.crud import save_review_and_findings
+                async def do_db_save():
+                    async with get_session() as session:
+                        await save_review_and_findings(
+                            repo_owner=owner,
+                            repo_name=name,
+                            pr_number=pr_number,
+                            commit_sha=commit_sha,
+                            findings=findings,
+                            changed_files=pr_context.changed_files,
+                            session=session,
+                        )
+                asyncio.run(do_db_save())
+                log.info("saved_review_and_debt_scores_to_db")
+        except Exception as db_exc:
+            log.error("failed_to_save_review_results_to_db", error=str(db_exc))
+            raise
+
         # Mark PR as completed in the DB
         try:
             asyncio.run(update_pr_status(repo_full_name, pr_number, commit_sha, "completed"))
@@ -201,3 +223,26 @@ def process_pr_review(
         except Exception as db_exc:
             log.warning("failed_to_update_pr_status_to_failed", error=str(db_exc))
         raise
+
+
+@celery_app.task(
+    name="tasks.index_repo_conventions",
+    max_retries=2,
+    default_retry_delay=60,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+)
+def index_repo_conventions_task(repo_full_name: str, installation_id: int | None = None) -> dict:
+    """
+    Celery task to clone a repository using app credentials and index its conventions.
+    """
+    logger.info("index_repo_conventions_task_started", repo=repo_full_name, installation_id=installation_id)
+    try:
+        from app.parser.conventions import clone_and_index_repo
+        clone_and_index_repo(repo_full_name=repo_full_name, installation_id=installation_id)
+        logger.info("index_repo_conventions_task_completed", repo=repo_full_name)
+        return {"status": "completed", "repo": repo_full_name}
+    except Exception as exc:
+        logger.error("index_repo_conventions_task_failed", repo=repo_full_name, error=str(exc))
+        raise
+

@@ -5,11 +5,14 @@ Ingestion pipeline logic to fetch PR and parse AST.
 from __future__ import annotations
 
 import os
+from pathlib import Path
+
 import structlog
+from agents.schemas import ChangedFile, PRContext
 from github import Github
 
-from agents.schemas import ChangedFile, PRContext
 from app.parser.ast import parse_and_summarize_file
+from app.parser.neo4j_ingest import get_blast_radius, get_changed_functions, ingest_file_to_neo4j
 
 logger = structlog.get_logger(__name__)
 
@@ -46,7 +49,12 @@ def ingest_pr(
     token = github_token or os.environ.get("GITHUB_TOKEN")
     g = Github(token) if token else Github()
 
-    logger.info("ingesting_pr_start", repo=repo_full_name, pr_number=pr_number, commit_sha=commit_sha)
+    logger.info(
+        "ingesting_pr_start",
+        repo=repo_full_name,
+        pr_number=pr_number,
+        commit_sha=commit_sha,
+    )
 
     repo = g.get_repo(repo_full_name)
     pr = repo.get_pull(pr_number)
@@ -104,6 +112,41 @@ def ingest_pr(
             source_content=source_content,
             diff_hunks=hunks,
         )
+
+        # Wire Neo4j Graph Ingestion & Blast Radius extraction
+        if language in ("python", "javascript", "typescript") and source_content:
+            try:
+                proj_root = str(Path(__file__).resolve().parents[3])
+                ingest_file_to_neo4j(
+                    file_path=path,
+                    language=language,
+                    source_content=source_content,
+                    repo_id=repo_full_name,
+                    project_root=proj_root,
+                )
+
+                # Get the list of functions changed in this diff hunk
+                changed_funcs = get_changed_functions(
+                    source_content=source_content,
+                    language=language,
+                    diff_hunks=hunks,
+                )
+
+                # Query blast radius for each changed function
+                blast_radius_set = set()
+                for fn_name in changed_funcs:
+                    callers = get_blast_radius(function_name=fn_name, file_path=path)
+                    blast_radius_set.update(callers)
+
+                changed_file_model.blast_radius = list(blast_radius_set)
+
+            except Exception as exc:
+                logger.error(
+                    "neo4j_pipeline_step_failed",
+                    path=path,
+                    error=str(exc)
+                )
+
         changed_files.append(changed_file_model)
 
     context = PRContext(
@@ -116,5 +159,10 @@ def ingest_pr(
         debt_score_delta=None,
     )
 
-    logger.info("ingesting_pr_complete", repo=repo_full_name, pr_number=pr_number, files_count=len(changed_files))
+    logger.info(
+        "ingesting_pr_complete",
+        repo=repo_full_name,
+        pr_number=pr_number,
+        files_count=len(changed_files),
+    )
     return context

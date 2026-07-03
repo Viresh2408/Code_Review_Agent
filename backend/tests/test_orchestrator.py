@@ -350,3 +350,332 @@ def test_security_agent_node_escalation_rejection(mock_anthropic_class, mock_gro
     assert len(findings) == 0
     assert mock_groq_client.chat.completions.create.call_count == 1
     assert mock_anthropic_client.messages.create.call_count == 1
+
+
+# ── LangGraph Parallel execution & Aggregator execution tests ─────────────────
+
+import time
+from langgraph.graph import StateGraph, END
+from agents.schemas import ReplaceFindings, merge_findings
+from agents.orchestrator import (
+    architecture_agent_node,
+    test_coverage_agent_node as coverage_agent_node_prod,
+    debt_scoring_agent_node,
+)
+
+def test_aggregator_single_execution_staggered():
+    """
+    Verify that in a parallel fan-out/fan-in graph identical to our pipeline:
+    - The aggregator node is invoked exactly once.
+    - Aggregator receives findings from all 4 branches.
+    - Custom merge_findings reducer and ReplaceFindings work correctly.
+    """
+    # 1. Setup a StateGraph with the same wiring as orchestrator
+    test_workflow = StateGraph(PRContext)
+    
+    # We will record invocations
+    call_log = []
+    
+    def slow_sec_node(state: PRContext):
+        time.sleep(0.15)  # Simulate slow agent
+        call_log.append("security")
+        return {"findings": [Finding(
+            agent="security_agent", file_path="a.py", severity="blocker",
+            category="security", message="SQLi", confidence=1.0
+        )]}
+        
+    def fast_arch_node(state: PRContext):
+        call_log.append("architecture")
+        return {"findings": [Finding(
+            agent="architecture_agent", file_path="b.py", severity="warning",
+            category="architecture", message="Circular Import", confidence=0.9
+        )]}
+        
+    def slow_cov_node(state: PRContext):
+        time.sleep(0.10)
+        call_log.append("test_coverage")
+        return {"findings": [Finding(
+            agent="test_coverage_agent", file_path="c.py", severity="nit",
+            category="test-coverage", message="No tests", confidence=0.8
+        )]}
+        
+    def fast_debt_node(state: PRContext):
+        call_log.append("debt_scoring")
+        return {"debt_score_delta": 4.5}
+        
+    def mock_agg_node(state: PRContext):
+        call_log.append("aggregator")
+        # Assert that all agents have already finished before aggregator runs
+        assert len(call_log) == 5  # 4 agents + aggregator itself
+        assert call_log[-1] == "aggregator"
+        
+        # Deduplicate and overwrite using ReplaceFindings
+        return {"findings": ReplaceFindings(state.findings)}
+
+    # Wire up the test workflow identically
+    test_workflow.add_node("ingestion", lambda s: {})
+    test_workflow.add_node("security", slow_sec_node)
+    test_workflow.add_node("architecture", fast_arch_node)
+    test_workflow.add_node("test_coverage", slow_cov_node)
+    test_workflow.add_node("debt_scoring", fast_debt_node)
+    test_workflow.add_node("aggregator", mock_agg_node)
+    
+    test_workflow.set_entry_point("ingestion")
+    test_workflow.add_edge("ingestion", "security")
+    test_workflow.add_edge("ingestion", "architecture")
+    test_workflow.add_edge("ingestion", "test_coverage")
+    test_workflow.add_edge("ingestion", "debt_scoring")
+    
+    test_workflow.add_edge("security", "aggregator")
+    test_workflow.add_edge("architecture", "aggregator")
+    test_workflow.add_edge("test_coverage", "aggregator")
+    test_workflow.add_edge("debt_scoring", "aggregator")
+    
+    test_workflow.add_edge("aggregator", END)
+    
+    test_graph = test_workflow.compile()
+    
+    # 2. Run graph
+    initial_state = PRContext(
+        repo="owner/repo", pr_number=1, commit_sha="sha",
+        changed_files=[], repo_conventions="", findings=[]
+    )
+    
+    final_state = test_graph.invoke(initial_state)
+    
+    # Verify that the aggregator ran exactly once at the end
+    assert call_log.count("aggregator") == 1
+    assert call_log[-1] == "aggregator"
+    
+    # Verify findings from all nodes are present in the final state
+    findings = final_state.findings if hasattr(final_state, "findings") else final_state.get("findings", [])
+    assert len(findings) == 3
+    agents = {f.agent for f in findings}
+    assert agents == {"security_agent", "architecture_agent", "test_coverage_agent"}
+    
+    # Verify debt_score_delta is correct
+    debt = final_state.debt_score_delta if hasattr(final_state, "debt_score_delta") else final_state.get("debt_score_delta", 0)
+    assert debt == 4.5
+
+
+# ── Architecture Agent Node Tests ─────────────────────────────────────────────
+
+@patch("agents.orchestrator.Groq")
+@patch("agents.orchestrator.Anthropic")
+@patch.dict(
+    os.environ,
+    {"GROQ_API_KEY": "test-groq-key", "ANTHROPIC_API_KEY": "test-anthropic-key"},
+)
+def test_architecture_agent_node(mock_anthropic_class, mock_groq_class):
+    """Verify that architecture agent node works and correctly triggers logs."""
+    mock_groq_client = MagicMock()
+    mock_groq_class.return_value = mock_groq_client
+    
+    # Mock Groq returns high confidence architectural finding
+    mock_groq_response = MagicMock()
+    mock_groq_response.usage.prompt_tokens = 80
+    mock_groq_response.usage.completion_tokens = 40
+    mock_groq_response.choices = [
+        MagicMock(message=MagicMock(content=json.dumps({
+            "findings": [
+                {
+                    "line": 5,
+                    "severity": "warning",
+                    "message": "Violation of architectural pattern",
+                    "confidence": 0.9,
+                    "suggested_fix": "Use helper instead of direct import"
+                }
+            ]
+        })))
+    ]
+    mock_groq_client.chat.completions.create.return_value = mock_groq_response
+
+    state = PRContext(
+        repo="owner/repo",
+        pr_number=1,
+        commit_sha="sha",
+        changed_files=[
+            ChangedFile(
+                path="src/app.py",
+                language="python",
+                diff_hunks=["@@ -1,10 +1,10 @@\n..."],
+                ast_summary="",
+                blast_radius=["func_name (caller.py)"]
+            )
+        ]
+    )
+
+    result = architecture_agent_node(state)
+    findings = result["findings"]
+
+    assert len(findings) == 1
+    assert findings[0].agent == "architecture_agent"
+    assert findings[0].line == 5
+    assert findings[0].severity == "warning"
+    assert findings[0].confidence == 0.9
+
+
+# ── Test-Coverage Agent Node Tests ─────────────────────────────────────────────
+
+@patch("agents.orchestrator.Groq")
+@patch("agents.orchestrator.Anthropic")
+@patch.dict(
+    os.environ,
+    {"GROQ_API_KEY": "test-groq-key", "ANTHROPIC_API_KEY": "test-anthropic-key"},
+)
+def test_test_coverage_agent_node(mock_anthropic_class, mock_groq_class):
+    """Verify that test-coverage agent node works and correctly triggers logs."""
+    mock_groq_client = MagicMock()
+    mock_groq_class.return_value = mock_groq_client
+    
+    # Mock Groq returns missing test coverage finding
+    mock_groq_response = MagicMock()
+    mock_groq_response.usage.prompt_tokens = 90
+    mock_groq_response.usage.completion_tokens = 30
+    mock_groq_response.choices = [
+        MagicMock(message=MagicMock(content=json.dumps({
+            "findings": [
+                {
+                    "line": 15,
+                    "severity": "warning",
+                    "message": "Enclosing method lacks test coverage",
+                    "confidence": 0.85,
+                    "suggested_fix": None
+                }
+            ]
+        })))
+    ]
+    mock_groq_client.chat.completions.create.return_value = mock_groq_response
+
+    state = PRContext(
+        repo="owner/repo",
+        pr_number=1,
+        commit_sha="sha",
+        changed_files=[
+            ChangedFile(
+                path="src/logic.py",
+                language="python",
+                diff_hunks=["@@ -10,10 +10,10 @@\n..."],
+                ast_summary="",
+                blast_radius=[]
+            ),
+            ChangedFile(
+                path="tests/test_logic.py",
+                language="python",
+                diff_hunks=["@@ -1,5 +1,5 @@\n..."],
+                ast_summary="",
+                blast_radius=[]
+            )
+        ]
+    )
+
+    result = coverage_agent_node_prod(state)
+    findings = result["findings"]
+
+    assert len(findings) == 1
+    assert findings[0].agent == "test_coverage_agent"
+    assert findings[0].line == 15
+    assert findings[0].severity == "warning"
+    assert findings[0].confidence == 0.85
+
+
+# ── Debt-Scoring Agent Node Tests ─────────────────────────────────────────────
+
+@patch("agents.orchestrator.Anthropic")
+@patch.dict(
+    os.environ,
+    {"ANTHROPIC_API_KEY": "test-anthropic-key"},
+)
+def test_debt_scoring_agent_node(mock_anthropic_class):
+    """Verify that debt scoring agent node works and invokes Claude Haiku in ambiguous cases."""
+    mock_anthropic_client = MagicMock()
+    mock_anthropic_class.return_value = mock_anthropic_client
+    
+    # Setup mock for Claude Haiku response
+    mock_haiku_response = MagicMock()
+    mock_haiku_response.usage.input_tokens = 50
+    mock_haiku_response.usage.output_tokens = 20
+    mock_haiku_response.content = [
+        MagicMock(text=json.dumps({
+            "multiplier": 1.5,
+            "reason": "Refactor reduces complexity but introduces a blocker finding."
+        }))
+    ]
+    mock_anthropic_client.messages.create.return_value = mock_haiku_response
+
+    # Setup state that triggers ambiguity:
+    # complexity_delta < 0, but lines_added > 50
+    state = PRContext(
+        repo="owner/repo",
+        pr_number=1,
+        commit_sha="sha",
+        changed_files=[
+            ChangedFile(
+                path="src/logic.py",
+                language="python",
+                # Added lines: 60 lines
+                diff_hunks=[
+                    "@@ -1,10 +1,70 @@\n" + "".join(f"+line {i}\n" for i in range(60))
+                ],
+                ast_summary="",
+                blast_radius=[]
+            )
+        ],
+        findings=[
+            Finding(
+                agent="security_agent", file_path="src/logic.py", severity="blocker",
+                category="security", message="SQLi", confidence=1.0
+            )
+        ]
+    )
+
+    # Mock get_complexity_delta to return -5 (reduced complexity)
+    with patch("agents.orchestrator.get_complexity_delta", return_value=-5):
+        result = debt_scoring_agent_node(state)
+        
+    assert "debt_score_delta" in result
+    score = result["debt_score_delta"]
+    
+    # base_score = (complexity_delta * 0.5) + (lines_added * 0.05) - (lines_removed * 0.05) + (duplication_delta * 0.5) + findings_weight
+    # blocker weight = 3.0
+    # base_score = (-5 * 0.5) + (60 * 0.05) + 3.0 = -2.5 + 3.0 + 3.0 = 3.5
+    # final_score = base_score * multiplier = 3.5 * 1.5 = 5.25
+    assert score == 5.25
+    assert mock_anthropic_client.messages.create.call_count == 1
+
+
+def test_route_agents():
+    """Verify that route_agents correctly skips agents for docs-only PRs and runs all for code PRs."""
+    from agents.orchestrator import route_agents
+    
+    # 1. Docs-only PR (e.g. only Markdown / text files)
+    docs_state = PRContext(
+        repo="owner/repo", pr_number=1, commit_sha="sha",
+        changed_files=[
+            ChangedFile(
+                path="README.md", language="markdown", diff_hunks=["@@ -1 +1 @@\n+Docs"], ast_summary="", blast_radius=[]
+            )
+        ],
+        repo_conventions="", findings=[]
+    )
+    routed = route_agents(docs_state)
+    assert routed == ["debt_scoring_agent_node"]
+    
+    # 2. Code PR (e.g. has Python file)
+    code_state = PRContext(
+        repo="owner/repo", pr_number=1, commit_sha="sha",
+        changed_files=[
+            ChangedFile(
+                path="main.py", language="python", diff_hunks=["@@ -1 +1 @@\n+def run(): pass"], ast_summary="", blast_radius=[]
+            )
+        ],
+        repo_conventions="", findings=[]
+    )
+    routed = route_agents(code_state)
+    assert set(routed) == {
+        "debt_scoring_agent_node",
+        "security_agent_node",
+        "architecture_agent_node",
+        "test_coverage_agent_node"
+    }
+

@@ -27,7 +27,8 @@ if str(backend_dir) not in sys.path:
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from agents.schemas import PRContext, Finding  # noqa: E402
+from agents.schemas import PRContext, Finding, ReplaceFindings  # noqa: E402
+# pyrefly: ignore [missing-import]
 from app.config import get_settings  # noqa: E402
 
 logger = structlog.get_logger(__name__)
@@ -122,6 +123,137 @@ Suggested Fix: {suggested_fix}
 {repo_conventions}"""
 
 
+ARCHITECTURE_PROMPT = """You are a senior software architect reviewing a pull request diff for
+architectural consistency, not correctness.
+
+Given the diff, its blast radius (files/functions that depend on this code),
+and this repository's established conventions, identify:
+- Violations of existing patterns used elsewhere in this repo
+- Introduction of circular dependencies
+- Changes with a large blast radius that lack corresponding safeguards
+  (e.g., a widely-called function changing its signature or return type)
+- Duplication of logic that already exists elsewhere in the codebase
+
+Only flag issues that are architecturally significant — do not comment on
+style or naming unless it actively causes confusion.
+
+Respond ONLY in this JSON schema:
+{{
+  "findings": [
+    {{"line": <int>, "severity": "blocker"|"warning"|"nit",
+     "message": "<specific>", "confidence": <float>,
+     "suggested_fix": "<string or null>"}}
+  ]
+}}
+
+--- DIFF HUNK ---
+{diff_hunk}
+--- BLAST RADIUS ---
+{blast_radius}
+--- REPO CONVENTIONS ---
+{repo_conventions}"""
+
+ARCHITECTURE_ESCALATION_PROMPT = """You are a senior software architect. Your job is to verify, refine, or reject a potential architectural consistency finding produced by a fast automated scanner.
+
+You will be given:
+- The diff hunk that triggered the finding
+- The details of the suspected finding (line, severity, message, suggested fix)
+- The blast radius (callers of this code)
+- The repository conventions
+
+Analyze the code and the finding carefully. If you determine the finding is a false positive or not architecturally significant, reject it by returning an empty findings list: {{"findings": []}}.
+If you confirm the finding, you may refine the line number, severity, message, confidence, or suggested fix. Return the refined finding in the schema below.
+
+Respond ONLY in this JSON schema:
+{{
+  "findings": [
+    {{
+      "line": <int>,
+      "severity": "blocker" | "warning" | "nit",
+      "message": "<specific>",
+      "confidence": <float 0.0-1.0>,
+      "suggested_fix": "<string or null>"
+    }}
+  ]
+}}
+
+--- SUSPECTED FINDING ---
+File: {file_path}
+Line: {line}
+Severity: {severity}
+Message: {message}
+Suggested Fix: {suggested_fix}
+
+--- DIFF HUNK ---
+{diff_hunk}
+--- BLAST RADIUS ---
+{blast_radius}
+--- REPO CONVENTIONS ---
+{repo_conventions}"""
+
+TEST_COVERAGE_PROMPT = """You are reviewing a pull request to check whether new or modified logic
+paths have corresponding test coverage.
+
+Given the diff and the list of test files changed in the same PR (if any),
+determine:
+- Which new branches, conditionals, or error-handling paths were introduced
+- Whether any test file in this PR appears to cover them
+- If not, flag the specific uncovered logic
+
+Do not require 100% coverage — only flag logic that is non-trivial
+(more than a simple getter/setter or trivial pass-through).
+
+Respond ONLY in this JSON schema:
+{{
+  "findings": [
+    {{"line": <int>, "severity": "warning"|"nit",
+     "message": "<what logic path lacks a test, be specific>",
+     "confidence": <float>, "suggested_fix": null}}
+  ]
+}}
+
+--- DIFF HUNK (source) ---
+{diff_hunk}
+--- DIFF HUNK (tests changed in this PR, if any) ---
+{test_diff_hunks}"""
+
+TEST_COVERAGE_ESCALATION_PROMPT = """You are a senior software reviewer. Your job is to verify, refine, or reject a potential test coverage finding produced by a fast automated scanner.
+
+You will be given:
+- The diff hunk (source)
+- The suspected finding (line, severity, message)
+- The diff hunk of the tests changed in this PR (if any)
+
+Analyze the code and the finding carefully. If you determine the finding is a false positive (e.g. the logic is trivial, or it is actually covered by a test), reject it by returning an empty findings list: {{"findings": []}}.
+If you confirm the finding, you may refine it. Return the refined finding in the schema below.
+
+Respond ONLY in this JSON schema:
+{{
+  "findings": [
+    {{
+      "line": <int>,
+      "severity": "warning" | "nit",
+      "message": "<what logic path lacks a test, be specific>",
+      "confidence": <float 0.0-1.0>,
+      "suggested_fix": null
+    }}
+  ]
+}}
+
+--- SUSPECTED FINDING ---
+File: {file_path}
+Line: {line}
+Severity: {severity}
+Message: {message}
+
+--- DIFF HUNK (source) ---
+{diff_hunk}
+--- DIFF HUNK (tests changed in this PR, if any) ---
+{test_diff_hunks}"""
+
+DEBT_SCORING_PROMPT = """Given this complexity delta ({complexity_delta}) and these findings ({findings_summary}), does this PR net-increase or net-decrease the codebase's technical debt? Respond with a single float multiplier between -1.0 (strongly reduces debt) and +1.0 (strongly increases debt), and one sentence of justification. JSON: {{"multiplier": <float>, "reason": "<str>"}}"""
+
+
 # ── Cost/Token Tracking ────────────────────────────────────────────────────────
 
 def log_llm_usage(provider: str, model: str, prompt_tokens: int, completion_tokens: int) -> float:
@@ -131,9 +263,14 @@ def log_llm_usage(provider: str, model: str, prompt_tokens: int, completion_toke
         input_rate = 0.59 / 1_000_000
         output_rate = 0.79 / 1_000_000
     elif provider.lower() == "anthropic":
-        # Claude 3.5 Sonnet rates: $3.00/M input, $15.00/M output
-        input_rate = 3.00 / 1_000_000
-        output_rate = 15.00 / 1_000_000
+        if "haiku" in model.lower():
+            # Claude 3.5 Haiku rates: $0.80/M input, $4.00/M output
+            input_rate = 0.80 / 1_000_000
+            output_rate = 4.00 / 1_000_000
+        else:
+            # Claude 3.5 Sonnet rates: $3.00/M input, $15.00/M output
+            input_rate = 3.00 / 1_000_000
+            output_rate = 15.00 / 1_000_000
     else:
         input_rate = 0.0
         output_rate = 0.0
@@ -352,7 +489,508 @@ def security_agent_node(state: PRContext) -> dict:
                 logger.error("hunk_review_failed", path=file.path, error=str(hunk_exc))
                 continue
 
-    return {"findings": state.findings + findings}
+    return {"findings": findings}
+
+
+def ingestion_node(state: PRContext) -> dict:
+    """
+    Ingestion node that retrieves relevant repo conventions for the changed files.
+    """
+    if isinstance(state, dict):
+        state = PRContext(**state)
+
+    changed_paths = [f.path for f in state.changed_files]
+    if not changed_paths:
+        logger.info("ingestion_node_no_changed_files_skipping_rag")
+        return {"repo_conventions": ""}
+
+    query_str = " ".join(changed_paths)
+    logger.info("ingestion_node_retrieving_conventions", repo=state.repo, query=query_str)
+
+    try:
+        # pyrefly: ignore [missing-import]
+        from app.parser.conventions import retrieve_conventions
+        repo_conventions = retrieve_conventions(repo_id=state.repo, query=query_str, k=5)
+    except Exception as exc:
+        logger.error("ingestion_node_failed_to_retrieve_conventions", error=str(exc))
+        repo_conventions = ""
+
+    return {"repo_conventions": repo_conventions}
+
+
+
+def architecture_agent_node(state: PRContext) -> dict:
+    """
+    Architecture review agent node.
+    Queries Groq (Llama 3.3 70B) for each changed file/hunk.
+    Escalates low-confidence findings (<0.7) to Claude 3.5 Sonnet.
+    """
+    if isinstance(state, dict):
+        state = PRContext(**state)
+
+    findings: list[Finding] = []
+
+    groq_api_key = os.environ.get("GROQ_API_KEY")
+    if not groq_api_key:
+        logger.warning("groq_api_key_missing_cannot_review_architecture")
+        return {"findings": findings}
+
+    groq_client = Groq(api_key=groq_api_key)
+
+    # Use settings api key as fallback
+    anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY") or get_settings().anthropic_api_key
+    anthropic_client = Anthropic(api_key=anthropic_api_key) if anthropic_api_key else None
+
+    supported_languages = {"python", "javascript", "typescript"}
+
+    for file in state.changed_files:
+        if file.language not in supported_languages:
+            continue
+
+        for hunk in file.diff_hunks:
+            try:
+                # Format primary prompt
+                prompt = ARCHITECTURE_PROMPT.format(
+                    diff_hunk=hunk,
+                    blast_radius=", ".join(file.blast_radius) if file.blast_radius else "None",
+                    repo_conventions=state.repo_conventions or "None",
+                )
+
+                # Call Groq
+                response = groq_client.chat.completions.create(
+                    model=GROQ_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1,
+                    response_format={"type": "json_object"},
+                )
+
+                prompt_tokens = response.usage.prompt_tokens
+                completion_tokens = response.usage.completion_tokens
+                log_llm_usage("groq", GROQ_MODEL, prompt_tokens, completion_tokens)
+
+                raw_content = response.choices[0].message.content
+                try:
+                    data = parse_json_response(raw_content)
+                except json.JSONDecodeError as exc:
+                    logger.error("json_decode_error_for_architecture_finding", raw_response=raw_content, error=str(exc))
+                    continue
+
+                parsed_findings = data.get("findings", [])
+                for pf in parsed_findings:
+                    line = pf.get("line")
+                    if line is not None:
+                        try:
+                            line = int(line)
+                        except ValueError:
+                            line = None
+
+                    severity = pf.get("severity", "warning")
+                    if severity not in ("blocker", "warning", "nit"):
+                        severity = "warning"
+
+                    confidence = float(pf.get("confidence", 1.0))
+
+                    finding = Finding(
+                        agent="architecture_agent",
+                        file_path=file.path,
+                        line=line,
+                        severity=severity,
+                        category="architecture",
+                        message=pf.get("message", ""),
+                        confidence=confidence,
+                        suggested_fix=pf.get("suggested_fix"),
+                        escalated_to_claude=False,
+                    )
+
+                    # Escalation routing (confidence < 0.7)
+                    if confidence < 0.7:
+                        if not anthropic_client:
+                            logger.warning("anthropic_client_missing_skipping_architecture_escalation", file_path=finding.file_path, line=finding.line)
+                            findings.append(finding)
+                            continue
+
+                        esc_prompt = ARCHITECTURE_ESCALATION_PROMPT.format(
+                            file_path=finding.file_path,
+                            line=finding.line if finding.line is not None else "Unknown",
+                            severity=finding.severity,
+                            message=finding.message,
+                            suggested_fix=finding.suggested_fix or "None",
+                            diff_hunk=hunk,
+                            blast_radius=", ".join(file.blast_radius) if file.blast_radius else "None",
+                            repo_conventions=state.repo_conventions or "None",
+                        )
+
+                        try:
+                            # Call Claude
+                            esc_response = anthropic_client.messages.create(
+                                model=CLAUDE_MODEL,
+                                max_tokens=1000,
+                                temperature=0.1,
+                                messages=[{"role": "user", "content": esc_prompt}],
+                            )
+
+                            esc_prompt_tokens = esc_response.usage.input_tokens
+                            esc_completion_tokens = esc_response.usage.output_tokens
+                            log_llm_usage("anthropic", CLAUDE_MODEL, esc_prompt_tokens, esc_completion_tokens)
+
+                            esc_content = esc_response.content[0].text
+                            try:
+                                esc_data = parse_json_response(esc_content)
+                            except json.JSONDecodeError as exc:
+                                logger.error("json_decode_error_for_escalated_architecture_finding", raw_response=esc_content, error=str(exc))
+                                findings.append(finding)
+                                continue
+
+                            esc_findings = esc_data.get("findings", [])
+                            if not esc_findings:
+                                logger.info("architecture_agent_finding_escalation_rejected", file_path=finding.file_path, line=finding.line)
+                                continue
+                            else:
+                                ef = esc_findings[0]
+                                esc_line = ef.get("line")
+                                if esc_line is not None:
+                                    try:
+                                        esc_line = int(esc_line)
+                                    except ValueError:
+                                        esc_line = None
+
+                                esc_severity = ef.get("severity", "warning")
+                                if esc_severity not in ("blocker", "warning", "nit"):
+                                    esc_severity = "warning"
+
+                                confirmed_finding = Finding(
+                                    agent="architecture_agent",
+                                    file_path=file.path,
+                                    line=esc_line,
+                                    severity=esc_severity,
+                                    category="architecture",
+                                    message=ef.get("message", finding.message),
+                                    confidence=float(ef.get("confidence", 1.0)),
+                                    suggested_fix=ef.get("suggested_fix", finding.suggested_fix),
+                                    escalated_to_claude=True,
+                                )
+                                findings.append(confirmed_finding)
+                        except Exception as esc_exc:
+                            logger.error("architecture_escalation_api_call_failed", error=str(esc_exc))
+                            findings.append(finding)
+                    else:
+                        findings.append(finding)
+
+            except Exception as hunk_exc:
+                logger.error("architecture_hunk_review_failed", path=file.path, error=str(hunk_exc))
+                continue
+
+    return {"findings": findings}
+
+
+def test_coverage_agent_node(state: PRContext) -> dict:
+    """
+    Test coverage review agent node.
+    Identifies new/modified logic paths lacking test coverage.
+    """
+    if isinstance(state, dict):
+        state = PRContext(**state)
+
+    findings: list[Finding] = []
+
+    groq_api_key = os.environ.get("GROQ_API_KEY")
+    if not groq_api_key:
+        logger.warning("groq_api_key_missing_cannot_review_test_coverage")
+        return {"findings": findings}
+
+    groq_client = Groq(api_key=groq_api_key)
+
+    anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY") or get_settings().anthropic_api_key
+    anthropic_client = Anthropic(api_key=anthropic_api_key) if anthropic_api_key else None
+
+    # Collect test hunks
+    test_hunks_list = []
+    for file in state.changed_files:
+        if "test" in file.path or "spec" in file.path:
+            for hunk in file.diff_hunks:
+                test_hunks_list.append(f"File: {file.path}\n{hunk}")
+    test_diff_hunks = "\n\n".join(test_hunks_list) if test_hunks_list else "No test files changed in this PR."
+
+    supported_languages = {"python", "javascript", "typescript"}
+
+    for file in state.changed_files:
+        if "test" in file.path or "spec" in file.path:
+            continue
+        if file.language not in supported_languages:
+            continue
+
+        for hunk in file.diff_hunks:
+            try:
+                # Format primary prompt
+                prompt = TEST_COVERAGE_PROMPT.format(
+                    diff_hunk=hunk,
+                    test_diff_hunks=test_diff_hunks,
+                )
+
+                # Call Groq
+                response = groq_client.chat.completions.create(
+                    model=GROQ_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1,
+                    response_format={"type": "json_object"},
+                )
+
+                prompt_tokens = response.usage.prompt_tokens
+                completion_tokens = response.usage.completion_tokens
+                log_llm_usage("groq", GROQ_MODEL, prompt_tokens, completion_tokens)
+
+                raw_content = response.choices[0].message.content
+                try:
+                    data = parse_json_response(raw_content)
+                except json.JSONDecodeError as exc:
+                    logger.error("json_decode_error_for_test_coverage_finding", raw_response=raw_content, error=str(exc))
+                    continue
+
+                parsed_findings = data.get("findings", [])
+                for pf in parsed_findings:
+                    line = pf.get("line")
+                    if line is not None:
+                        try:
+                            line = int(line)
+                        except ValueError:
+                            line = None
+
+                    severity = pf.get("severity", "warning")
+                    if severity not in ("warning", "nit"):
+                        severity = "warning"
+
+                    confidence = float(pf.get("confidence", 1.0))
+
+                    finding = Finding(
+                        agent="test_coverage_agent",
+                        file_path=file.path,
+                        line=line,
+                        severity=severity,
+                        category="test-coverage",
+                        message=pf.get("message", ""),
+                        confidence=confidence,
+                        suggested_fix=None,
+                        escalated_to_claude=False,
+                    )
+
+                    # Escalation routing (confidence < 0.7)
+                    if confidence < 0.7:
+                        if not anthropic_client:
+                            logger.warning("anthropic_client_missing_skipping_test_coverage_escalation", file_path=finding.file_path, line=finding.line)
+                            findings.append(finding)
+                            continue
+
+                        esc_prompt = TEST_COVERAGE_ESCALATION_PROMPT.format(
+                            file_path=finding.file_path,
+                            line=finding.line if finding.line is not None else "Unknown",
+                            severity=finding.severity,
+                            message=finding.message,
+                            diff_hunk=hunk,
+                            test_diff_hunks=test_diff_hunks,
+                        )
+
+                        try:
+                            # Call Claude
+                            esc_response = anthropic_client.messages.create(
+                                model=CLAUDE_MODEL,
+                                max_tokens=1000,
+                                temperature=0.1,
+                                messages=[{"role": "user", "content": esc_prompt}],
+                            )
+
+                            esc_prompt_tokens = esc_response.usage.input_tokens
+                            esc_completion_tokens = esc_response.usage.output_tokens
+                            log_llm_usage("anthropic", CLAUDE_MODEL, esc_prompt_tokens, esc_completion_tokens)
+
+                            esc_content = esc_response.content[0].text
+                            try:
+                                esc_data = parse_json_response(esc_content)
+                            except json.JSONDecodeError as exc:
+                                logger.error("json_decode_error_for_escalated_test_coverage_finding", raw_response=esc_content, error=str(exc))
+                                findings.append(finding)
+                                continue
+
+                            esc_findings = esc_data.get("findings", [])
+                            if not esc_findings:
+                                logger.info("test_coverage_agent_finding_escalation_rejected", file_path=finding.file_path, line=finding.line)
+                                continue
+                            else:
+                                ef = esc_findings[0]
+                                esc_line = ef.get("line")
+                                if esc_line is not None:
+                                    try:
+                                        esc_line = int(esc_line)
+                                    except ValueError:
+                                        esc_line = None
+
+                                esc_severity = ef.get("severity", "warning")
+                                if esc_severity not in ("warning", "nit"):
+                                    esc_severity = "warning"
+
+                                confirmed_finding = Finding(
+                                    agent="test_coverage_agent",
+                                    file_path=file.path,
+                                    line=esc_line,
+                                    severity=esc_severity,
+                                    category="test-coverage",
+                                    message=ef.get("message", finding.message),
+                                    confidence=float(ef.get("confidence", 1.0)),
+                                    suggested_fix=None,
+                                    escalated_to_claude=True,
+                                )
+                                findings.append(confirmed_finding)
+                        except Exception as esc_exc:
+                            logger.error("test_coverage_escalation_api_call_failed", error=str(esc_exc))
+                            findings.append(finding)
+                    else:
+                        findings.append(finding)
+
+            except Exception as hunk_exc:
+                logger.error("test_coverage_hunk_review_failed", path=file.path, error=str(hunk_exc))
+                continue
+
+    return {"findings": findings}
+
+
+def get_complexity_delta(hunks: list[str], language: str) -> int:
+    added_code = []
+    removed_code = []
+    for hunk in hunks:
+        for line in hunk.splitlines():
+            if line.startswith("+") and not line.startswith("+++"):
+                added_code.append(line[1:])
+            elif line.startswith("-") and not line.startswith("---"):
+                removed_code.append(line[1:])
+    added_text = "\n".join(added_code)
+    removed_text = "\n".join(removed_code)
+
+    def count_complexity_fallback(code: str) -> int:
+        if not code:
+            return 0
+        keywords = ["if ", "elif ", "for ", "while ", "except ", "catch ", "&&", "||", "case "]
+        count = 1
+        for kw in keywords:
+            count += code.count(kw)
+        return count
+
+    if language == "python":
+        try:
+            from radon.visitors import ComplexityVisitor
+            added_comp = sum(f.complexity for f in ComplexityVisitor.from_code(added_text).functions) if added_text.strip() else 0
+            removed_comp = sum(f.complexity for f in ComplexityVisitor.from_code(removed_text).functions) if removed_text.strip() else 0
+            return added_comp - removed_comp
+        except Exception:
+            pass
+
+    return count_complexity_fallback(added_text) - count_complexity_fallback(removed_text)
+
+
+def calculate_duplication_delta(changed_files: list) -> float:
+    added_lines = []
+    for file in changed_files:
+        for hunk in file.diff_hunks:
+            for line in hunk.splitlines():
+                if line.startswith("+") and not line.startswith("+++"):
+                    added_lines.append(line[1:].strip())
+    if not added_lines:
+        return 0.0
+    seen = set()
+    dups = 0
+    for line in added_lines:
+        if not line:
+            continue
+        if line in seen:
+            dups += 1
+        else:
+            seen.add(line)
+    return float(dups)
+
+
+def debt_scoring_agent_node(state: PRContext) -> dict:
+    """
+    Debt scoring agent node.
+    Computes technical debt delta and queries Claude Haiku in ambiguous cases.
+    """
+    try:
+        if isinstance(state, dict):
+            state = PRContext(**state)
+
+        complexity_delta = 0
+        lines_added = 0
+        lines_removed = 0
+        for file in state.changed_files:
+            complexity_delta += get_complexity_delta(file.diff_hunks, file.language)
+            for hunk in file.diff_hunks:
+                for line in hunk.splitlines():
+                    if line.startswith("+") and not line.startswith("+++"):
+                        lines_added += 1
+                    elif line.startswith("-") and not line.startswith("---"):
+                        lines_removed += 1
+
+        duplication_delta = calculate_duplication_delta(state.changed_files)
+
+        # Count of findings from other agents
+        blocker_count = sum(1 for f in state.findings if f.severity == "blocker")
+        warning_count = sum(1 for f in state.findings if f.severity == "warning")
+        nit_count = sum(1 for f in state.findings if f.severity == "nit")
+        findings_weight = blocker_count * 3.0 + warning_count * 1.0 + nit_count * 0.25
+
+        base_score = (complexity_delta * 0.5) + (lines_added * 0.05) - (lines_removed * 0.05) + (duplication_delta * 0.5) + findings_weight
+
+        is_ambiguous = (complexity_delta < 0 and (lines_added > 50 or duplication_delta > 0)) or \
+                       (base_score != 0.0 and abs(base_score) < 1.0 and (lines_added > 100 or lines_removed > 100))
+
+        multiplier = 1.0
+        reason = "Calculated via rule-based metrics (complexity, duplication, lines changed, findings)."
+
+        if is_ambiguous:
+            anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY") or get_settings().anthropic_api_key
+            if anthropic_api_key:
+                anthropic_client = Anthropic(api_key=anthropic_api_key)
+                findings_summary = f"{blocker_count} blockers, {warning_count} warnings, {nit_count} nits"
+                prompt = DEBT_SCORING_PROMPT.format(
+                    complexity_delta=complexity_delta,
+                    findings_summary=findings_summary
+                )
+
+                try:
+                    response = anthropic_client.messages.create(
+                        model="claude-3-5-haiku-20241022",
+                        max_tokens=200,
+                        temperature=0.1,
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+
+                    prompt_tokens = response.usage.input_tokens
+                    completion_tokens = response.usage.output_tokens
+                    log_llm_usage("anthropic", "claude-3-5-haiku-20241022", prompt_tokens, completion_tokens)
+
+                    content = response.content[0].text
+                    data = parse_json_response(content)
+                    multiplier = float(data.get("multiplier", 1.0))
+                    reason = data.get("reason", reason)
+                except Exception as exc:
+                    logger.error("debt_scoring_llm_call_failed", error=str(exc))
+            else:
+                logger.warning("anthropic_client_missing_skipping_debt_scoring_llm_call")
+
+        final_score = base_score * multiplier
+        logger.info(
+            "debt_scoring_completed",
+            complexity_delta=complexity_delta,
+            lines_added=lines_added,
+            lines_removed=lines_removed,
+            duplication_delta=duplication_delta,
+            base_score=base_score,
+            multiplier=multiplier,
+            final_score=final_score,
+            reason=reason
+        )
+
+        return {"debt_score_delta": final_score}
+    except Exception as e:
+        logger.error("debt_scoring_node_failed", error=str(e))
+        return {"debt_score_delta": 0.0}
 
 
 def aggregator_node(state: PRContext) -> dict:
@@ -379,17 +1017,56 @@ def aggregator_node(state: PRContext) -> dict:
         key=lambda x: severity_order.get(x.severity, 1),
     )
 
-    return {"findings": sorted_findings}
+    return {"findings": ReplaceFindings(sorted_findings)}
+
+
+def route_agents(state: PRContext) -> list[str]:
+    """Decide which sub-agents to invoke based on changed file types."""
+    if isinstance(state, dict):
+        state = PRContext(**state)
+
+    languages = {f.language for f in state.changed_files}
+    agents_to_run = ["debt_scoring_agent_node"]  # always runs
+    if languages & {"python", "javascript", "typescript"}:
+        agents_to_run += [
+            "security_agent_node",
+            "architecture_agent_node",
+            "test_coverage_agent_node",
+        ]
+    logger.info("routing_agents", languages=list(languages), agents_to_run=agents_to_run)
+    return agents_to_run
 
 
 # ── Pipeline Setup ────────────────────────────────────────────────────────────
 
 workflow = StateGraph(PRContext)
+workflow.add_node("ingestion_node", ingestion_node)
 workflow.add_node("security_agent_node", security_agent_node)
+workflow.add_node("architecture_agent_node", architecture_agent_node)
+workflow.add_node("test_coverage_agent_node", test_coverage_agent_node)
+workflow.add_node("debt_scoring_agent_node", debt_scoring_agent_node)
 workflow.add_node("aggregator_node", aggregator_node)
 
-workflow.set_entry_point("security_agent_node")
+workflow.set_entry_point("ingestion_node")
+
+# Dynamic parallel fan-out via conditional edges
+workflow.add_conditional_edges(
+    "ingestion_node",
+    route_agents,
+    {
+        "security_agent_node": "security_agent_node",
+        "architecture_agent_node": "architecture_agent_node",
+        "test_coverage_agent_node": "test_coverage_agent_node",
+        "debt_scoring_agent_node": "debt_scoring_agent_node",
+    }
+)
+
+# Parallel fan-in to aggregator_node
 workflow.add_edge("security_agent_node", "aggregator_node")
+workflow.add_edge("architecture_agent_node", "aggregator_node")
+workflow.add_edge("test_coverage_agent_node", "aggregator_node")
+workflow.add_edge("debt_scoring_agent_node", "aggregator_node")
+
 workflow.add_edge("aggregator_node", END)
 
 graph = workflow.compile()
@@ -523,6 +1200,7 @@ def parse_pr_url(url: str) -> tuple[str, int]:
 if __name__ == "__main__":
     import argparse
     from dotenv import load_dotenv
+    # pyrefly: ignore [missing-import]
     from app.parser.pipeline import ingest_pr
 
     load_dotenv()

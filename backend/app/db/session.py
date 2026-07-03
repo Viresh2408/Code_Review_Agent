@@ -21,12 +21,17 @@ from app.config import get_settings
 settings = get_settings()
 
 # ── Async engine ──────────────────────────────────────────────────────────────
+engine_kwargs = {
+    "echo": settings.app_env == "development",   # SQL logging in dev only
+    "pool_pre_ping": True,                       # auto-reconnect on stale connections
+}
+if "sqlite" not in settings.database_url:
+    engine_kwargs["pool_size"] = 10
+    engine_kwargs["max_overflow"] = 20
+
 async_engine = create_async_engine(
     settings.database_url,
-    echo=settings.app_env == "development",   # SQL logging in dev only
-    pool_size=10,
-    max_overflow=20,
-    pool_pre_ping=True,                       # auto-reconnect on stale connections
+    **engine_kwargs
 )
 
 # ── Session factory ───────────────────────────────────────────────────────────

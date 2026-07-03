@@ -5,10 +5,10 @@ AST parsing utilities using tree-sitter.
 from __future__ import annotations
 
 import re
-import structlog
-from tree_sitter_languages import get_parser
 
+import structlog
 from agents.schemas import ChangedFile
+from tree_sitter_languages import get_parser
 
 logger = structlog.get_logger(__name__)
 
@@ -189,6 +189,31 @@ def generate_ast_summary(changed_definitions: list, source_bytes: bytes) -> str:
     return "\n".join(summary_parts)
 
 
+def get_changed_definitions(root_node, diff_hunks: list[str]) -> list:
+    """
+    Given a root tree-sitter node and unified diff hunks, identify the
+    enclosing class or function definition nodes that contain the changed lines.
+    """
+    changed_lines = []
+    for hunk in diff_hunks:
+        changed_lines.extend(parse_changed_lines(hunk))
+
+    seen_definitions = set()
+    changed_definitions = []
+
+    for line in changed_lines:
+        ts_line = line - 1  # tree-sitter uses 0-indexed line numbers
+        deepest_node = find_deepest_node(root_node, ts_line)
+        if deepest_node is not None:
+            enclosing = get_enclosing_definition(deepest_node)
+            if enclosing is not None:
+                key = (enclosing.start_byte, enclosing.end_byte)
+                if key not in seen_definitions:
+                    seen_definitions.add(key)
+                    changed_definitions.append(enclosing)
+    return changed_definitions
+
+
 def parse_and_summarize_file(
     file_path: str,
     language: str,
@@ -216,25 +241,8 @@ def parse_and_summarize_file(
         tree = parser.parse(source_bytes)
         root_node = tree.root_node
 
-        # Parse all changed lines from unified diff hunks
-        changed_lines = []
-        for hunk in diff_hunks:
-            changed_lines.extend(parse_changed_lines(hunk))
-
-        # Deduplicate definition nodes covering changed lines
-        seen_definitions = set()
-        changed_definitions = []
-
-        for line in changed_lines:
-            ts_line = line - 1  # tree-sitter uses 0-indexed line numbers
-            deepest_node = find_deepest_node(root_node, ts_line)
-            if deepest_node is not None:
-                enclosing = get_enclosing_definition(deepest_node)
-                if enclosing is not None:
-                    key = (enclosing.start_byte, enclosing.end_byte)
-                    if key not in seen_definitions:
-                        seen_definitions.add(key)
-                        changed_definitions.append(enclosing)
+        # Get definition nodes covering changed lines
+        changed_definitions = get_changed_definitions(root_node, diff_hunks)
 
         # Generate the formatted AST summary
         ast_summary = generate_ast_summary(changed_definitions, source_bytes)

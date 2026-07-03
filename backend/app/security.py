@@ -12,7 +12,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 
-from fastapi import HTTPException, Request, status
+import jwt
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+from app.config import get_settings
 
 
 async def verify_github_signature(request: Request, secret: str) -> bytes:
@@ -54,3 +58,35 @@ async def verify_github_signature(request: Request, secret: str) -> bytes:
         )
 
     return body
+
+
+security = HTTPBearer(auto_error=False)
+settings = get_settings()
+
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> dict:
+    """
+    Verify the JWT token from the Authorization header.
+    In development, accepts "dev-token" as a valid bearer token bypass.
+    """
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated. Missing Authorization header.",
+        )
+
+    if settings.app_env == "development" and credentials.credentials == "dev-token":
+        return {"sub": "dev-user", "role": "admin"}
+
+    try:
+        payload = jwt.decode(
+            credentials.credentials,
+            settings.jwt_secret_key,
+            algorithms=["HS256"],
+        )
+        return payload
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired authentication token.",
+        )

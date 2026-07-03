@@ -12,7 +12,7 @@ Matches the PRContext schema documented in AGENTS.md.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Annotated
 
 from pydantic import BaseModel, Field
 
@@ -38,6 +38,24 @@ class ChangedFile(BaseModel):
     )
 
 
+class ReplaceFindings(list):
+    """
+    Special wrapper to signal the merge_findings reducer to overwrite
+    the accumulated findings instead of appending them.
+    """
+    pass
+
+
+def merge_findings(current: list[Finding], new_val: list[Finding]) -> list[Finding]:
+    """
+    Custom LangGraph reducer to merge findings from parallel nodes.
+    Supports overwriting when wrapped in ReplaceFindings.
+    """
+    if isinstance(new_val, ReplaceFindings):
+        return list(new_val)
+    return (current or []) + (new_val or [])
+
+
 class PRContext(BaseModel):
     """
     Shared state passed through the LangGraph pipeline.
@@ -58,7 +76,7 @@ class PRContext(BaseModel):
     )
 
     # ── Agent outputs ─────────────────────────────────────────────────────────
-    findings: list["Finding"] = Field(default_factory=list)
+    findings: Annotated[list["Finding"], merge_findings] = Field(default_factory=list)
     debt_score_delta: float | None = None
 
     # ── Metadata ──────────────────────────────────────────────────────────────

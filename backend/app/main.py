@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.webhooks.github import router as github_router
+from app.api.v1.endpoints import router as api_v1_router
 
 # ── Structlog configuration ───────────────────────────────────────────────────
 # Outputs JSON in production, pretty-printed in development (NFR-5)
@@ -51,10 +52,16 @@ app = FastAPI(
     redoc_url="/redoc" if settings.app_env != "production" else None,
 )
 
-# ── Events ────────────────────────────────────────────────────────────────────
 @app.on_event("startup")
 async def on_startup() -> None:
     logger.info("backend_starting", env=settings.app_env, log_level=settings.log_level)
+    # Zero-ops SQLite fallback: auto-create tables on startup in development
+    if "sqlite" in settings.database_url:
+        from app.db.base import Base
+        from app.db.session import async_engine
+        async with async_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("sqlite_tables_created_successfully")
 
 
 @app.on_event("shutdown")
@@ -70,3 +77,4 @@ async def health() -> JSONResponse:
 
 
 app.include_router(github_router, prefix="/webhooks")
+app.include_router(api_v1_router, prefix="/api/v1")

@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     """Typed, validated application configuration."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(".env", "../.env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -60,8 +60,17 @@ class Settings(BaseSettings):
     chroma_host: str = "localhost"
     chroma_port: int = 8001
 
+    # ── Neo4j ─────────────────────────────────────────────────────────────────
+    neo4j_uri: str = "bolt://localhost:7687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = "password"
+
     # ── LLM APIs ──────────────────────────────────────────────────────────────
     anthropic_api_key: str = ""
+
+    # ── JWT Security ──────────────────────────────────────────────────────────
+    jwt_secret_key: str = "dev-jwt-secret-key-change-in-production"
+
 
 
 @lru_cache(maxsize=1)

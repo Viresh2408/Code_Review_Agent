@@ -146,9 +146,23 @@ def test_webhook_valid_pr_opened(client):
 
 def test_task_idempotency_not_duplicate():
     """If PR does not exist in the DB, the task should run fully and complete."""
-    # Mock database session to return None for both queries (Repo and PR)
+    # Mock database session to return sequential results
     mock_session = AsyncMock()
-    mock_session.execute.return_value.scalar_one_or_none.return_value = None
+    
+    mock_repo_res = MagicMock()
+    mock_repo_res.scalar_one_or_none.return_value = MagicMock(id=123)
+    
+    mock_pr_res = MagicMock()
+    mock_pr_res.scalar_one_or_none.return_value = None
+    
+    # Configure execute side_effect for check_idempotency and save_review_and_findings
+    mock_session.execute.side_effect = [
+        mock_repo_res,  # check_idempotency Repo query
+        mock_pr_res,    # check_idempotency PR query
+        mock_repo_res,  # save_review_and_findings Repo query
+        mock_pr_res,    # save_review_and_findings PR query
+        mock_pr_res,    # save_review_and_findings last score query
+    ]
 
     with patch("app.tasks.review_job.get_session") as mock_get_session, \
          patch("app.parser.pipeline.ingest_pr") as mock_ingest_pr, \
