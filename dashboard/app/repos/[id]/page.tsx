@@ -68,9 +68,32 @@ export default function RepoDashboard() {
   // Search input state
   const [searchInput, setSearchInput] = useState<string>("");
 
-  // Simulated review runs for selector
-  const [selectedReviewId, setSelectedReviewId] = useState<number>(1);
-  const reviewOptions = [1, 2, 3];
+  // Actual review runs for selector fetched from backend
+  const [reviews, setReviews] = useState<any[]>([]);
+  const [selectedReviewId, setSelectedReviewId] = useState<number | null>(null);
+
+  // Fetch reviews list when repoId changes
+  useEffect(() => {
+    async function fetchReviews() {
+      if (!repoId) return;
+      try {
+        const res = await fetch(`${API_BASE}/api/v1/repos/${repoId}/reviews`, {
+          headers: AUTH_HEADERS,
+        });
+        if (res.ok) {
+          const json = await res.json();
+          const fetchedReviews = json.reviews || [];
+          setReviews(fetchedReviews);
+          if (fetchedReviews.length > 0) {
+            setSelectedReviewId(fetchedReviews[0].id);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch reviews list:", err);
+      }
+    }
+    fetchReviews();
+  }, [repoId]);
 
   // Fetch trend and findings
   useEffect(() => {
@@ -92,13 +115,16 @@ export default function RepoDashboard() {
         setTrendData(trendJson.trend || []);
 
         // 2. Fetch Findings for the selected review
-        const findingsUrl = `${API_BASE}/api/v1/reviews/${selectedReviewId}/findings?limit=50`;
-        const findingsRes = await fetch(findingsUrl, { headers: AUTH_HEADERS });
-        if (findingsRes.ok) {
-          const findingsJson = await findingsRes.json();
-          setFindings(findingsJson.findings || []);
+        if (selectedReviewId) {
+          const findingsUrl = `${API_BASE}/api/v1/reviews/${selectedReviewId}/findings?limit=50`;
+          const findingsRes = await fetch(findingsUrl, { headers: AUTH_HEADERS });
+          if (findingsRes.ok) {
+            const findingsJson = await findingsRes.json();
+            setFindings(findingsJson.findings || []);
+          } else {
+            setFindings([]);
+          }
         } else {
-          // Fallback if review does not exist yet (return empty list gracefully)
           setFindings([]);
         }
       } catch (err: any) {
@@ -426,19 +452,23 @@ export default function RepoDashboard() {
                     {/* Review Selector */}
                     <div>
                       <label className="block text-xs font-bold uppercase tracking-wider text-[#94a3b8] mb-2">
-                        Select Review Run ID
+                        Select Review Run
                       </label>
                       <div className="relative">
                         <select
-                          value={selectedReviewId}
-                          onChange={(e) => setSelectedReviewId(Number(e.target.value))}
+                          value={selectedReviewId || ""}
+                          onChange={(e) => setSelectedReviewId(e.target.value ? Number(e.target.value) : null)}
                           className="w-full bg-[#090d16] border border-[#1e293b] text-sm text-white rounded-xl px-4 py-3 appearance-none focus:outline-none focus:border-indigo-500 transition-all duration-300"
                         >
-                          {reviewOptions.map((opt) => (
-                            <option key={opt} value={opt}>
-                              Review Run #{opt}
-                            </option>
-                          ))}
+                          {reviews.length === 0 ? (
+                            <option value="">No review runs available</option>
+                          ) : (
+                            reviews.map((r) => (
+                              <option key={r.id} value={r.id}>
+                                PR #{r.pr_number} - {r.title || `Review Run #${r.id}`} (Run #{r.id})
+                              </option>
+                            ))
+                          )}
                         </select>
                         <div className="absolute right-4 top-4 border-t-4 border-t-white border-l-4 border-l-transparent border-r-4 border-r-transparent pointer-events-none" />
                       </div>

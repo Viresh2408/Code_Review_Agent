@@ -249,3 +249,85 @@ def test_api_endpoints_findings_success(client):
         assert data["findings"][0]["id"] == 501
         assert data["findings"][0]["file_path"] == "src/orders.py"
         assert data["findings"][0]["severity"] == "blocker"
+
+
+def test_api_endpoints_repos_success(client):
+    """Verify repos endpoint returns list of active repositories with stats."""
+    from app.models import Repo
+    headers = {"Authorization": "Bearer dev-token"}
+    mock_session = AsyncMock()
+
+    # Mock Repo object
+    repo = Repo(
+        id=1,
+        github_repo_id=12345678,
+        owner="owner",
+        name="name",
+    )
+
+    # We need to mock the executions inside the loop:
+    # 1. select(Repo) -> returns [repo]
+    # 2. distinct file_path select -> returns []
+    # 3. review_stmt select -> returns stats
+    mock_res_repo = MagicMock()
+    mock_res_repo.scalars.return_value.all.return_value = [repo]
+
+    mock_res_files = MagicMock()
+    mock_res_files.scalars.return_value.all.return_value = []
+
+    mock_res_stats = MagicMock()
+    mock_res_stats.first.return_value = MagicMock(review_count=3, total_findings=5)
+
+    mock_session.execute.side_effect = [mock_res_repo, mock_res_files, mock_res_stats]
+    mock_ctx = AsyncMock()
+    mock_ctx.__aenter__.return_value = mock_session
+
+    with patch("app.api.v1.endpoints.get_session", return_value=mock_ctx):
+        res = client.get("/api/v1/repos", headers=headers)
+        assert res.status_code == status.HTTP_200_OK
+        data = res.json()
+        assert "repos" in data
+        assert len(data["repos"]) == 1
+        assert data["repos"][0]["id"] == 1
+        assert data["repos"][0]["full_name"] == "owner/name"
+        assert data["repos"][0]["review_count"] == 3
+        assert data["repos"][0]["total_findings"] == 5
+
+
+def test_api_endpoints_repo_reviews_success(client):
+    """Verify repo reviews endpoint returns list of reviews."""
+    from app.models import Review, PullRequest
+    headers = {"Authorization": "Bearer dev-token"}
+    mock_session = AsyncMock()
+
+    # Mock Review and related PR
+    pr = PullRequest(id=10, pr_number=12, commit_sha="abcdef", title="Fix bug")
+    review = Review(
+        id=201,
+        pull_request_id=10,
+        total_findings=2,
+        blocker_count=0,
+        warning_count=1,
+        nit_count=1,
+    )
+    # Set relationship manually
+    review.pull_request = pr
+
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = [review]
+
+    mock_session.execute.return_value = mock_result
+    mock_ctx = AsyncMock()
+    mock_ctx.__aenter__.return_value = mock_session
+
+    with patch("app.api.v1.endpoints.get_session", return_value=mock_ctx):
+        res = client.get("/api/v1/repos/1/reviews?limit=10&offset=0", headers=headers)
+        assert res.status_code == status.HTTP_200_OK
+        data = res.json()
+        assert "reviews" in data
+        assert len(data["reviews"]) == 1
+        assert data["reviews"][0]["id"] == 201
+        assert data["reviews"][0]["pr_number"] == 12
+        assert data["reviews"][0]["commit_sha"] == "abcdef"
+        assert data["reviews"][0]["total_findings"] == 2
+

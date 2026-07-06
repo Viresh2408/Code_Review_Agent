@@ -134,6 +134,15 @@ class Finding(Base):
     message: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[Decimal | None] = mapped_column(Numeric(3, 2))
     escalated_to_claude: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    escalation_outcome: Mapped[str] = mapped_column(
+        String(10),
+        CheckConstraint(
+            "escalation_outcome IN ('confirmed', 'rejected', 'n/a')",
+            name="ck_finding_escalation_outcome",
+        ),
+        server_default="n/a",
+        nullable=False,
+    )
     suggested_fix: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

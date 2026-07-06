@@ -5,12 +5,20 @@ Celery review job task stub.
 from __future__ import annotations
 
 import asyncio
+import time
+import redis
 import structlog
 from sqlalchemy import select, func
 
+from sqlalchemy.exc import IntegrityError
 from app.db.session import get_session
 from app.models import PullRequest, Repo
 from app.tasks.celery_app import celery_app
+from app.observability.metrics import (
+    reviews_total,
+    review_duration_seconds,
+    queue_depth,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -56,49 +64,55 @@ async def update_pr_status(
     pr_number: int,
     commit_sha: str,
     status: str,
-) -> None:
+) -> bool:
     """
     Create or update the PullRequest status in the database.
+    Returns True if successful, False if blocked by a concurrency lock.
     """
     if "/" not in repo_full_name:
-        return
+        return False
 
     owner, name = repo_full_name.split("/", 1)
 
-    async with get_session() as session:
-        # Find the repository first
-        repo_stmt = select(Repo).where(Repo.owner == owner, Repo.name == name)
-        repo_res = await session.execute(repo_stmt)
-        repo = repo_res.scalar_one_or_none()
-        if not repo:
-            # If repo doesn't exist, we don't have a record to attach the PR to.
-            return
+    try:
+        async with get_session() as session:
+            # Find the repository first
+            repo_stmt = select(Repo).where(Repo.owner == owner, Repo.name == name)
+            repo_res = await session.execute(repo_stmt)
+            repo = repo_res.scalar_one_or_none()
+            if not repo:
+                return False
 
-        # Check if the PullRequest record exists
-        pr_stmt = select(PullRequest).where(
-            PullRequest.repo_id == repo.id,
-            PullRequest.pr_number == pr_number,
-            PullRequest.commit_sha == commit_sha,
-        )
-        pr_res = await session.execute(pr_stmt)
-        pr = pr_res.scalar_one_or_none()
-
-        if pr:
-            pr.status = status
-            if status == "completed":
-                pr.completed_at = func.now()
-        else:
-            pr = PullRequest(
-                repo_id=repo.id,
-                pr_number=pr_number,
-                commit_sha=commit_sha,
-                status=status,
+            # Check if the PullRequest record exists
+            pr_stmt = select(PullRequest).where(
+                PullRequest.repo_id == repo.id,
+                PullRequest.pr_number == pr_number,
+                PullRequest.commit_sha == commit_sha,
             )
-            if status == "completed":
-                pr.completed_at = func.now()
-            session.add(pr)
+            pr_res = await session.execute(pr_stmt)
+            pr = pr_res.scalar_one_or_none()
 
-        await session.commit()
+            if pr:
+                if status == "processing" and pr.status in ("processing", "completed"):
+                    return False
+                pr.status = status
+                if status == "completed":
+                    pr.completed_at = func.now()
+            else:
+                pr = PullRequest(
+                    repo_id=repo.id,
+                    pr_number=pr_number,
+                    commit_sha=commit_sha,
+                    status=status,
+                )
+                if status == "completed":
+                    pr.completed_at = func.now()
+                session.add(pr)
+
+            await session.commit()
+            return True
+    except IntegrityError:
+        return False
 
 
 @celery_app.task(
@@ -121,6 +135,7 @@ def process_pr_review(
     """
     Process a PR review run. Checks idempotency using DB before executing logic.
     """
+    start_time = time.time()
     log = logger.bind(
         task_id=self.request.id,
         repo=repo_full_name,
@@ -129,17 +144,28 @@ def process_pr_review(
     )
     log.info("pr_review_task_started")
 
+    # Record Celery queue depth on pickup
+    try:
+        from app.config import get_settings
+        settings = get_settings()
+        r = redis.from_url(settings.celery_broker_url)
+        q_len = r.llen("pr_review")
+        queue_depth.observe(q_len)
+    except Exception as q_exc:
+        log.warning("failed_to_record_queue_depth", error=str(q_exc))
+
     try:
         is_dup = asyncio.run(check_idempotency(repo_full_name, pr_number, commit_sha))
     except Exception as exc:
         log.error("idempotency_check_failed", error=str(exc))
-        is_dup = False
+        raise
 
     if is_dup:
         log.info(
             "pr_review_task_skipped_duplicate",
             reason="Review for this commit SHA is already completed or processing.",
         )
+        reviews_total.labels(status="skipped_duplicate").inc()
         return {
             "status": "skipped_duplicate",
             "repo": repo_full_name,
@@ -149,9 +175,21 @@ def process_pr_review(
 
     # Mark PR as processing in the DB
     try:
-        asyncio.run(update_pr_status(repo_full_name, pr_number, commit_sha, "processing"))
+        success = asyncio.run(update_pr_status(repo_full_name, pr_number, commit_sha, "processing"))
+        if not success:
+            log.info(
+                "pr_review_task_skipped_concurrent_run",
+                reason="Another worker has already claimed this review.",
+            )
+            return {
+                "status": "skipped_concurrent",
+                "repo": repo_full_name,
+                "pr_number": pr_number,
+                "commit_sha": commit_sha,
+            }
     except Exception as exc:
-        log.warning("failed_to_update_pr_status_to_processing", error=str(exc))
+        log.error("failed_to_update_pr_status_to_processing", error=str(exc))
+        raise
 
     try:
         log.info("pr_review_task_ingestion_started")
@@ -186,16 +224,19 @@ def process_pr_review(
                 from app.db.crud import save_review_and_findings
                 async def do_db_save():
                     async with get_session() as session:
-                        await save_review_and_findings(
+                        return await save_review_and_findings(
                             repo_owner=owner,
                             repo_name=name,
                             pr_number=pr_number,
                             commit_sha=commit_sha,
                             findings=findings,
                             changed_files=pr_context.changed_files,
+                            pr_title=getattr(pr_context, "title", None),
+                            pr_author=getattr(pr_context, "author", None),
                             session=session,
                         )
-                asyncio.run(do_db_save())
+                review_obj = asyncio.run(do_db_save())
+                log = log.bind(review_id=review_obj.id)
                 log.info("saved_review_and_debt_scores_to_db")
         except Exception as db_exc:
             log.error("failed_to_save_review_results_to_db", error=str(db_exc))
@@ -205,7 +246,12 @@ def process_pr_review(
         try:
             asyncio.run(update_pr_status(repo_full_name, pr_number, commit_sha, "completed"))
         except Exception as exc:
-            log.warning("failed_to_update_pr_status_to_completed", error=str(exc))
+            log.error("failed_to_update_pr_status_to_completed", error=str(exc))
+            raise
+
+        # Record metrics
+        reviews_total.labels(status="completed").inc()
+        review_duration_seconds.observe(time.time() - start_time)
 
         return {
             "status": "completed",
@@ -222,6 +268,10 @@ def process_pr_review(
             asyncio.run(update_pr_status(repo_full_name, pr_number, commit_sha, "failed"))
         except Exception as db_exc:
             log.warning("failed_to_update_pr_status_to_failed", error=str(db_exc))
+        
+        # Record metrics
+        reviews_total.labels(status="failed").inc()
+        review_duration_seconds.observe(time.time() - start_time)
         raise
 
 

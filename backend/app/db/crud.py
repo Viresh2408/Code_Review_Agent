@@ -61,6 +61,8 @@ async def save_review_and_findings(
     findings: list[dict] | list[any],
     changed_files: list[any],
     *,
+    pr_title: str | None = None,
+    pr_author: str | None = None,
     session: AsyncSession,
 ) -> Review:
     """
@@ -87,9 +89,17 @@ async def save_review_and_findings(
             pr_number=pr_number,
             commit_sha=commit_sha,
             status="completed",
+            title=pr_title,
+            author=pr_author,
         )
         session.add(pr)
         await session.flush()
+    else:
+        pr.status = "completed"
+        if pr_title:
+            pr.title = pr_title
+        if pr_author:
+            pr.author = pr_author
 
     # 3. Create the Review object
     blocker_count = sum(1 for f in findings if (f.get("severity") if isinstance(f, dict) else f.severity) == "blocker")

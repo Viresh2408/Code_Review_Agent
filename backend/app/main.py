@@ -18,28 +18,13 @@ from fastapi.responses import JSONResponse
 from app.config import get_settings
 from app.webhooks.github import router as github_router
 from app.api.v1.endpoints import router as api_v1_router
+from app.observability.logging_config import setup_logging
+from prometheus_fastapi_instrumentator import Instrumentator
 
-# ── Structlog configuration ───────────────────────────────────────────────────
-# Outputs JSON in production, pretty-printed in development (NFR-5)
+# Initialize unified structured logging config
+setup_logging()
+
 settings = get_settings()
-
-structlog.configure(
-    processors=[
-        structlog.contextvars.merge_contextvars,
-        structlog.processors.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.JSONRenderer()
-        if settings.app_env == "production"
-        else structlog.dev.ConsoleRenderer(),
-    ],
-    wrapper_class=structlog.make_filtering_bound_logger(
-        logging.getLevelName(settings.log_level)
-    ),
-    context_class=dict,
-    logger_factory=structlog.PrintLoggerFactory(),
-)
-
 logger = structlog.get_logger(__name__)
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
@@ -51,6 +36,10 @@ app = FastAPI(
     docs_url="/docs" if settings.app_env != "production" else None,
     redoc_url="/redoc" if settings.app_env != "production" else None,
 )
+
+# Mount Prometheus metrics instrumentator
+Instrumentator().instrument(app).expose(app)
+
 
 @app.on_event("startup")
 async def on_startup() -> None:

@@ -1,18 +1,1007 @@
 [
   {
-    "pr_number": 2635,
-    "pr_url": "https://github.com/pallets/flask/pull/2635",
-    "title": "Require opt-in for subdomain matching",
-    "commit_sha": "82f0d120deb9ea52237d95a14a4a619b01d06f80",
-    "changed_files_count": 5,
-    "diff": "diff --git a/CHANGES.rst b/CHANGES.rst\nindex 84fa436f6e..6a363149ca 100644\n--- a/CHANGES.rst\n+++ b/CHANGES.rst\n@@ -139,6 +139,10 @@ unreleased\n   attribute on the session cookie. (`#2607`_)\n - Added :meth:`~flask.Flask.test_cli_runner` to create a Click runner\n   that can invoke Flask CLI commands for testing. (`#2636`_)\n+- Subdomain matching is disabled by default and setting\n+  :data:`SERVER_NAME` does not implicily enable it. It can be enabled by\n+  passing ``subdomain_matching=True`` to the ``Flask`` constructor.\n+  (`#2635`_)\n \n .. _pallets/meta#24: https://github.com/pallets/meta/issues/24\n .. _#1421: https://github.com/pallets/flask/issues/1421\n@@ -181,6 +185,7 @@ unreleased\n .. _#2606: https://github.com/pallets/flask/pull/2606\n .. _#2607: https://github.com/pallets/flask/pull/2607\n .. _#2636: https://github.com/pallets/flask/pull/2636\n+.. _#2635: https://github.com/pallets/flask/pull/2635\n \n \n Version 0.12.2\ndiff --git a/docs/config.rst b/docs/config.rst\nindex 2e2833f9bf..c496ac0039 100644\n--- a/docs/config.rst\n+++ b/docs/config.rst\n@@ -181,8 +181,8 @@ The following configuration values are used internally by Flask:\n .. py:data:: SESSION_COOKIE_DOMAIN\n \n     The domain match rule that the session cookie will be valid for. If not\n-    set, the cookie will be valid for all subdomains of ``SERVER_NAME``. If\n-    ``False``, the cookie's domain will not be set.\n+    set, the cookie will be valid for all subdomains of :data:`SERVER_NAME`.\n+    If ``False``, the cookie's domain will not be set.\n \n     Default: ``None``\n \n@@ -257,13 +257,14 @@ The following configuration values are used internally by Flask:\n \n .. py:data:: SERVER_NAME\n \n-    Inform the application what host and port it is bound to. Required for\n-    subdomain route matching support.\n+    Inform the application what host and port it is bound to. Required\n+    for subdomain route matching support.\n \n     If set, will be used for the session cookie domain if\n-    ``SESSION_COOKIE_DOMAIN`` is not set. Modern web browsers will not allow\n-    setting cookies for domains without a dot. To use a domain locally,\n-    add any names that should route to the app to your ``hosts`` file. ::\n+    :data:`SESSION_COOKIE_DOMAIN` is not set. Modern web browsers will\n+    not allow setting cookies for domains without a dot. To use a domain\n+    locally, add any names that should route to the app to your\n+    ``hosts`` file. ::\n \n         127.0.0.1 localhost.dev\n \ndiff --git a/flask/app.py b/flask/app.py\nindex 7c53a5838c..89be4dc532 100644\n--- a/flask/app.py\n+++ b/flask/app.py\n@@ -123,8 +123,13 @@ class Flask(_PackageBoundObject):\n     .. versionadded:: 0.11\n        The `root_path` parameter was added.\n \n-    .. versionadded:: 0.13\n-       The `host_matching` and `static_host` parameters were added.\n+    .. versionadded:: 1.0\n+       The ``host_matching`` and ``static_host`` parameters were added.\n+\n+    .. versionadded:: 1.0\n+       The ``subdomain_matching`` parameter was added. Subdomain\n+       matching needs to be enabled manually now. Setting\n+       :data:`SERVER_NAME` does not implicitly enable it.\n \n     :param import_name: the name of the application package\n     :param static_url_path: can be used to specify a different path for the\n@@ -133,11 +138,13 @@ class Flask(_PackageBoundObject):\n     :param static_folder: the folder with static files that should be served\n                           at `static_url_path`.  Defaults to the ``'static'``\n                           folder in the root path of the application.\n-    :param host_matching: sets the app's ``url_map.host_matching`` to the given\n-                          value. Defaults to False.\n-    :param static_host: the host to use when adding the static route. Defaults\n-                        to None. Required when using ``host_matching=True``\n-                        with a ``static_folder`` configured.\n+    :param static_host: the host to use when adding the static route.\n+        Defaults to None. Required when using ``host_matching=True``\n+        with a ``static_folder`` configured.\n+    :param host_matching: set ``url_map.host_matching`` attribute.\n+        Defaults to False.\n+    :param subdomain_matching: consider the subdomain relative to\n+        :data:`SERVER_NAME` when matching routes. Defaults to False.\n     :param template_folder: the folder that contains the templates that should\n                             be used by the application.  Defaults to\n                             ``'templates'`` folder in the root path of the\n@@ -347,6 +354,7 @@ def __init__(\n         static_folder='static',\n         static_host=None,\n         host_matching=False,\n+        subdomain_matching=False,\n         template_folder='templates',\n         instance_path=None,\n         instance_relative_config=False,\n@@ -530,6 +538,7 @@ def __init__(\n         self.url_map = Map()\n \n         self.url_map.host_matching = host_matching\n+        self.subdomain_matching = subdomain_matching\n \n         # tracks internally if the application already handled at least one\n         # request.\n@@ -1977,19 +1986,30 @@ def make_response(self, rv):\n         return rv\n \n     def create_url_adapter(self, request):\n-        \"\"\"Creates a URL adapter for the given request.  The URL adapter\n-        is created at a point where the request context is not yet set up\n-        so the request is passed explicitly.\n+        \"\"\"Creates a URL adapter for the given request. The URL adapter\n+        is created at a point where the request context is not yet set\n+        up so the request is passed explicitly.\n \n         .. versionadded:: 0.6\n \n         .. versionchanged:: 0.9\n            This can now also be called without a request object when the\n            URL adapter is created for the application context.\n+\n+        .. versionchanged:: 1.0\n+            :data:`SERVER_NAME` no longer implicitly enables subdomain\n+            matching. Use :attr:`subdomain_matching` instead.\n         \"\"\"\n         if request is not None:\n-            return self.url_map.bind_to_environ(request.environ,\n-                server_name=self.config['SERVER_NAME'])\n+            # If subdomain matching is disabled (the default), use the\n+            # default subdomain in all cases. This should be the default\n+            # in Werkzeug but it currently does not have that feature.\n+            subdomain = ((self.url_map.default_subdomain or None)\n+                         if not self.subdomain_matching else None)\n+            return self.url_map.bind_to_environ(\n+                request.environ,\n+                server_name=self.config['SERVER_NAME'],\n+                subdomain=subdomain)\n         # We need at the very least the server name to be set for this\n         # to work.\n         if self.config['SERVER_NAME'] is not None:\ndiff --git a/tests/test_basic.py b/tests/test_basic.py\nindex a054ae396f..66e0d9074b 100644\n--- a/tests/test_basic.py\n+++ b/tests/test_basic.py\n@@ -1429,10 +1429,12 @@ def test_request_locals():\n     assert not flask.g\n \n \n-def test_test_app_proper_environ(app, client):\n+def test_test_app_proper_environ():\n+    app = flask.Flask(__name__, subdomain_matching=True)\n     app.config.update(\n         SERVER_NAME='localhost.localdomain:5000'\n     )\n+    client = app.test_client()\n \n     @app.route('/')\n     def index():\n@@ -1783,8 +1785,10 @@ def test_g_iteration_protocol(app_ctx):\n     assert sorted(flask.g) == ['bar', 'foo']\n \n \n-def test_subdomain_basic_support(app, client):\n+def test_subdomain_basic_support():\n+    app = flask.Flask(__name__, subdomain_matching=True)\n     app.config['SERVER_NAME'] = 'localhost.localdomain'\n+    client = app.test_client()\n \n     @app.route('/')\n     def normal_index():\n@@ -1801,7 +1805,9 @@ def test_index():\n     assert rv.data == b'test index'\n \n \n-def test_subdomain_matching(app, client):\n+def test_subdomain_matching():\n+    app = flask.Flask(__name__, subdomain_matching=True)\n+    client = app.test_client()\n     app.config['SERVER_NAME'] = 'localhost.localdomain'\n \n     @app.route('/', subdomain='<user>')\n@@ -1812,8 +1818,10 @@ def index(user):\n     assert rv.data == b'index for mitsuhiko'\n \n \n-def test_subdomain_matching_with_ports(app, client):\n+def test_subdomain_matching_with_ports():\n+    app = flask.Flask(__name__, subdomain_matching=True)\n     app.config['SERVER_NAME'] = 'localhost.localdomain:3000'\n+    client = app.test_client()\n \n     @app.route('/', subdomain='<user>')\n     def index(user):\n@@ -1823,6 +1831,25 @@ def index(user):\n     assert rv.data == b'index for mitsuhiko'\n \n \n+@pytest.mark.parametrize('matching', (False, True))\n+def test_subdomain_matching_other_name(matching):\n+    app = flask.Flask(__name__, subdomain_matching=matching)\n+    app.config['SERVER_NAME'] = 'localhost.localdomain:3000'\n+    client = app.test_client()\n+\n+    @app.route('/')\n+    def index():\n+        return '', 204\n+\n+    # ip address can't match name\n+    rv = client.get('/', 'http://127.0.0.1:3000/')\n+    assert rv.status_code == 404 if matching else 204\n+\n+    # allow all subdomains if matching is disabled\n+    rv = client.get('/', 'http://www.localhost.localdomain:3000/')\n+    assert rv.status_code == 404 if matching else 204\n+\n+\n def test_multi_route_rules(app, client):\n     @app.route('/')\n     @app.route('/<test>/')\ndiff --git a/tests/test_testing.py b/tests/test_testing.py\nindex b0619d2cf1..14c663240f 100644\n--- a/tests/test_testing.py\n+++ b/tests/test_testing.py\n@@ -114,9 +114,11 @@ def test_path_is_url(app):\n     assert eb.path == '/'\n \n \n-def test_blueprint_with_subdomain(app, client):\n+def test_blueprint_with_subdomain():\n+    app = flask.Flask(__name__, subdomain_matching=True)\n     app.config['SERVER_NAME'] = 'example.com:1234'\n     app.config['APPLICATION_ROOT'] = '/foo'\n+    client = app.test_client()\n \n     bp = flask.Blueprint('company', __name__, subdomain='xxx')\n \n@@ -304,8 +306,10 @@ def echo():\n         assert rv.get_json() == json_data\n \n \n-def test_subdomain(app, client):\n+def test_subdomain():\n+    app = flask.Flask(__name__, subdomain_matching=True)\n     app.config['SERVER_NAME'] = 'example.com'\n+    client = app.test_client()\n \n     @app.route('/', subdomain='<company_id>')\n     def view(company_id):\n",
+    "pr_number": 1781,
+    "pr_url": "https://github.com/pallets/flask/pull/1781",
+    "title": "minor rewording of get_json documentation for clarity",
+    "commit_sha": "49061587c477c04ecafb46bf27c139b17adfdd8d",
+    "changed_files_count": 1,
+    "diff": "diff --git a/flask/wrappers.py b/flask/wrappers.py\nindex 8b1ca25109..9d61150461 100644\n--- a/flask/wrappers.py\n+++ b/flask/wrappers.py\n@@ -123,11 +123,12 @@ def is_json(self):\n         return False\n \n     def get_json(self, force=False, silent=False, cache=True):\n-        \"\"\"Parses the incoming JSON request data and returns it.  If\n-        parsing fails the :meth:`on_json_loading_failed` method on the\n-        request object will be invoked.  By default this function will\n-        only load the json data if the mimetype is :mimetype:`application/json`\n-        but this can be overridden by the `force` parameter.\n+        \"\"\"Parses the incoming JSON request data and returns it.  By default\n+        this function will return ``None`` if the mimetype is not\n+        :mimetype:`application/json` but this can be overridden by the\n+        ``force`` parameter. If parsing fails the\n+        :meth:`on_json_loading_failed` method on the request object will be\n+        invoked.\n \n         :param force: if set to ``True`` the mimetype is ignored.\n         :param silent: if set to ``True`` this method will fail silently\n",
     "human_comments": [
       {
-        "id": 169991222,
+        "id": 59618561,
+        "file_path": "flask/wrappers.py",
+        "line": null,
+        "user": "davidism",
+        "body": "Inline code uses two backticks in rst: ``None`` and force below. Single backticks are for references.\n"
+      }
+    ]
+  },
+  {
+    "pr_number": 1878,
+    "pr_url": "https://github.com/pallets/flask/pull/1878",
+    "title": "Use recwarn everywhere",
+    "commit_sha": "6c359e0f532d18a71895f035dd1326ca5d2d67f8",
+    "changed_files_count": 5,
+    "diff": "diff --git a/tests/conftest.py b/tests/conftest.py\nindex 7a209c221f..8c9541deab 100644\n--- a/tests/conftest.py\n+++ b/tests/conftest.py\n@@ -7,6 +7,7 @@\n     :license: BSD, see LICENSE for more details.\n \"\"\"\n import flask\n+import gc\n import os\n import sys\n import pkgutil\n@@ -126,8 +127,8 @@ def inner(name):\n     return inner\n \n \n-@pytest.fixture\n-def catch_deprecation_warnings():\n-    import warnings\n-    warnings.simplefilter('default', category=DeprecationWarning)\n-    return lambda: warnings.catch_warnings(record=True)\n+@pytest.yield_fixture(autouse=True)\n+def catch_deprecation_warnings(recwarn):\n+    yield\n+    gc.collect()\n+    assert not recwarn.list\ndiff --git a/tests/test_basic.py b/tests/test_basic.py\nindex 45cad691e3..95417c35f0 100644\n--- a/tests/test_basic.py\n+++ b/tests/test_basic.py\n@@ -1116,12 +1116,15 @@ def test_static_files():\n     rv.close()\n \n \n-def test_static_path_deprecated():\n-    with pytest.deprecated_call():\n-        app = flask.Flask(__name__, static_path='/foo')\n+def test_static_path_deprecated(recwarn):\n+    app = flask.Flask(__name__, static_path='/foo')\n+    recwarn.pop(DeprecationWarning)\n+\n     app.testing = True\n     rv = app.test_client().get('/foo/index.html')\n     assert rv.status_code == 200\n+    rv.close()\n+\n     with app.test_request_context():\n         assert flask.url_for('static', filename='index.html') == '/foo/index.html'\n \n@@ -1131,6 +1134,8 @@ def test_static_url_path():\n     app.testing = True\n     rv = app.test_client().get('/foo/index.html')\n     assert rv.status_code == 200\n+    rv.close()\n+\n     with app.test_request_context():\n         assert flask.url_for('static', filename='index.html') == '/foo/index.html'\n \ndiff --git a/tests/test_deprecations.py b/tests/test_deprecations.py\nindex 757aacd0cb..666f7d56bc 100644\n--- a/tests/test_deprecations.py\n+++ b/tests/test_deprecations.py\n@@ -16,7 +16,7 @@\n \n class TestRequestDeprecation(object):\n \n-    def test_request_json(self, catch_deprecation_warnings):\n+    def test_request_json(self, recwarn):\n         \"\"\"Request.json is deprecated\"\"\"\n         app = flask.Flask(__name__)\n         app.testing = True\n@@ -27,13 +27,11 @@ def index():\n             print(flask.request.json)\n             return 'OK'\n \n-        with catch_deprecation_warnings() as captured:\n-            c = app.test_client()\n-            c.post('/', data='{\"spam\": 42}', content_type='application/json')\n+        c = app.test_client()\n+        c.post('/', data='{\"spam\": 42}', content_type='application/json')\n+        recwarn.pop(DeprecationWarning)\n \n-        assert len(captured) == 1\n-\n-    def test_request_module(self, catch_deprecation_warnings):\n+    def test_request_module(self, recwarn):\n         \"\"\"Request.module is deprecated\"\"\"\n         app = flask.Flask(__name__)\n         app.testing = True\n@@ -43,8 +41,6 @@ def index():\n             assert flask.request.module is None\n             return 'OK'\n \n-        with catch_deprecation_warnings() as captured:\n-            c = app.test_client()\n-            c.get('/')\n-\n-        assert len(captured) == 1\n+        c = app.test_client()\n+        c.get('/')\n+        recwarn.pop(DeprecationWarning)\ndiff --git a/tests/test_ext.py b/tests/test_ext.py\nindex f5728312a8..d336e40412 100644\n--- a/tests/test_ext.py\n+++ b/tests/test_ext.py\n@@ -20,6 +20,18 @@\n from flask._compat import PY2\n \n \n+@pytest.fixture(autouse=True)\n+def disable_extwarnings(request, recwarn):\n+    from flask.exthook import ExtDeprecationWarning\n+\n+    def inner():\n+        assert set(w.category for w in recwarn.list) \\\n+            <= set([ExtDeprecationWarning])\n+        recwarn.clear()\n+\n+    request.addfinalizer(inner)\n+\n+\n @pytest.fixture(autouse=True)\n def importhook_setup(monkeypatch, request):\n     # we clear this out for various reasons.  The most important one is\ndiff --git a/tests/test_helpers.py b/tests/test_helpers.py\nindex 6dc41fad83..1fec1d87a4 100644\n--- a/tests/test_helpers.py\n+++ b/tests/test_helpers.py\n@@ -337,7 +337,7 @@ def test_send_file_regular(self):\n                 assert rv.data == f.read()\n             rv.close()\n \n-    def test_send_file_xsendfile(self):\n+    def test_send_file_xsendfile(self, catch_deprecation_warnings):\n         app = flask.Flask(__name__)\n         app.use_x_sendfile = True\n         with app.test_request_context():\n@@ -349,90 +349,101 @@ def test_send_file_xsendfile(self):\n             assert rv.mimetype == 'text/html'\n             rv.close()\n \n-    def test_send_file_object(self, catch_deprecation_warnings):\n+    def test_send_file_object(self, recwarn):\n         app = flask.Flask(__name__)\n-        with catch_deprecation_warnings() as captured:\n-            with app.test_request_context():\n-                f = open(os.path.join(app.root_path, 'static/index.html'), mode='rb')\n+\n+        with app.test_request_context():\n+            with open(os.path.join(app.root_path, 'static/index.html'), mode='rb') as f:\n                 rv = flask.send_file(f)\n                 rv.direct_passthrough = False\n                 with app.open_resource('static/index.html') as f:\n                     assert rv.data == f.read()\n                 assert rv.mimetype == 'text/html'\n                 rv.close()\n-            # mimetypes + etag\n-            assert len(captured) == 2\n+\n+        # mimetypes + etag\n+        recwarn.pop(DeprecationWarning)\n+        recwarn.pop(DeprecationWarning)\n \n         app.use_x_sendfile = True\n-        with catch_deprecation_warnings() as captured:\n-            with app.test_request_context():\n-                f = open(os.path.join(app.root_path, 'static/index.html'))\n+\n+        with app.test_request_context():\n+            with open(os.path.join(app.root_path, 'static/index.html')) as f:\n                 rv = flask.send_file(f)\n                 assert rv.mimetype == 'text/html'\n                 assert 'x-sendfile' in rv.headers\n                 assert rv.headers['x-sendfile'] == \\\n                     os.path.join(app.root_path, 'static/index.html')\n                 rv.close()\n-            # mimetypes + etag\n-            assert len(captured) == 2\n+\n+        # mimetypes + etag\n+        recwarn.pop(DeprecationWarning)\n+        recwarn.pop(DeprecationWarning)\n \n         app.use_x_sendfile = False\n         with app.test_request_context():\n-            with catch_deprecation_warnings() as captured:\n-                f = StringIO('Test')\n-                rv = flask.send_file(f)\n-                rv.direct_passthrough = False\n-                assert rv.data == b'Test'\n-                assert rv.mimetype == 'application/octet-stream'\n-                rv.close()\n+            f = StringIO('Test')\n+            rv = flask.send_file(f)\n+            rv.direct_passthrough = False\n+            assert rv.data == b'Test'\n+            assert rv.mimetype == 'application/octet-stream'\n+            rv.close()\n+\n             # etags\n-            assert len(captured) == 1\n-            with catch_deprecation_warnings() as captured:\n-                class PyStringIO(object):\n-                    def __init__(self, *args, **kwargs):\n-                        self._io = StringIO(*args, **kwargs)\n-                    def __getattr__(self, name):\n-                        return getattr(self._io, name)\n-                f = PyStringIO('Test')\n-                f.name = 'test.txt'\n-                rv = flask.send_file(f)\n-                rv.direct_passthrough = False\n-                assert rv.data == b'Test'\n-                assert rv.mimetype == 'text/plain'\n-                rv.close()\n+            recwarn.pop(DeprecationWarning)\n+\n+            class PyStringIO(object):\n+                def __init__(self, *args, **kwargs):\n+                    self._io = StringIO(*args, **kwargs)\n+                def __getattr__(self, name):\n+                    return getattr(self._io, name)\n+            f = PyStringIO('Test')\n+            f.name = 'test.txt'\n+            rv = flask.send_file(f)\n+            rv.direct_passthrough = False\n+            assert rv.data == b'Test'\n+            assert rv.mimetype == 'text/plain'\n+            rv.close()\n+\n             # attachment_filename and etags\n-            assert len(captured) == 3\n-            with catch_deprecation_warnings() as captured:\n-                f = StringIO('Test')\n-                rv = flask.send_file(f, mimetype='text/plain')\n-                rv.direct_passthrough = False\n-                assert rv.data == b'Test'\n-                assert rv.mimetype == 'text/plain'\n-                rv.close()\n+            a = recwarn.pop(DeprecationWarning)\n+            b = recwarn.pop(DeprecationWarning)\n+            c = recwarn.pop(UserWarning)  # file not found\n+\n+            f = StringIO('Test')\n+            rv = flask.send_file(f, mimetype='text/plain')\n+            rv.direct_passthrough = False\n+            assert rv.data == b'Test'\n+            assert rv.mimetype == 'text/plain'\n+            rv.close()\n+\n             # etags\n-            assert len(captured) == 1\n+            recwarn.pop(DeprecationWarning)\n \n         app.use_x_sendfile = True\n-        with catch_deprecation_warnings() as captured:\n-            with app.test_request_context():\n-                f = StringIO('Test')\n-                rv = flask.send_file(f)\n-                assert 'x-sendfile' not in rv.headers\n-                rv.close()\n-            # etags\n-            assert len(captured) == 1\n \n-    def test_attachment(self, catch_deprecation_warnings):\n+        with app.test_request_context():\n+            f = StringIO('Test')\n+            rv = flask.send_file(f)\n+            assert 'x-sendfile' not in rv.headers\n+            rv.close()\n+\n+        # etags\n+        recwarn.pop(DeprecationWarning)\n+\n+    def test_attachment(self, recwarn):\n         app = flask.Flask(__name__)\n-        with catch_deprecation_warnings() as captured:\n-            with app.test_request_context():\n-                f = open(os.path.join(app.root_path, 'static/index.html'))\n+        with app.test_request_context():\n+            with open(os.path.join(app.root_path, 'static/index.html')) as f:\n                 rv = flask.send_file(f, as_attachment=True)\n-                value, options = parse_options_header(rv.headers['Content-Disposition'])\n+                value, options = \\\n+                    parse_options_header(rv.headers['Content-Disposition'])\n                 assert value == 'attachment'\n                 rv.close()\n-            # mimetypes + etag\n-            assert len(captured) == 2\n+\n+        # mimetypes + etag\n+        assert len(recwarn.list) == 2\n+        recwarn.clear()\n \n         with app.test_request_context():\n             assert options['filename'] == 'index.html'\n",
+    "human_comments": [
+      {
+        "id": 65695818,
+        "file_path": "tests/conftest.py",
+        "line": null,
+        "user": "ThiefMaster",
+        "body": "I think `yield_fixture` would be cleaner and more readable:\n\n``` python\n@pytest.yield_fixture(autouse=True)\ndef catch_deprecation_warnings(recwarn):\n    yield\n    assert not recwarn.list\n```\n"
+      },
+      {
+        "id": 65695902,
+        "file_path": "tests/conftest.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "Interesting, wasn't aware of that.\n"
+      }
+    ]
+  },
+  {
+    "pr_number": 1679,
+    "pr_url": "https://github.com/pallets/flask/pull/1679",
+    "title": "Werkzeug should not block propagated exceptions from Flask",
+    "commit_sha": "952a6c8989137bb0c44adaf37df0227b8e426a75",
+    "changed_files_count": 3,
+    "diff": "diff --git a/flask/app.py b/flask/app.py\nindex 9113977307..f75dd818d7 100644\n--- a/flask/app.py\n+++ b/flask/app.py\n@@ -833,6 +833,7 @@ def run(self, host=None, port=None, debug=None, **options):\n             self.debug = bool(debug)\n         options.setdefault('use_reloader', self.debug)\n         options.setdefault('use_debugger', self.debug)\n+        options.setdefault('passthrough_errors', True)\n         try:\n             run_simple(host, port, self, **options)\n         finally:\ndiff --git a/flask/cli.py b/flask/cli.py\nindex 360ce12e8b..141c9eea41 100644\n--- a/flask/cli.py\n+++ b/flask/cli.py\n@@ -422,7 +422,8 @@ def run_command(info, host, port, reload, debugger, eager_loading,\n             print(' * Forcing debug %s' % (info.debug and 'on' or 'off'))\n \n     run_simple(host, port, app, use_reloader=reload,\n-               use_debugger=debugger, threaded=with_threads)\n+               use_debugger=debugger, threaded=with_threads,\n+               passthrough_errors=True)\n \n \n @click.command('shell', short_help='Runs a shell in the app context.')\ndiff --git a/tests/test_basic.py b/tests/test_basic.py\nindex d22e9e5b73..d7cc7a3f0b 100644\n--- a/tests/test_basic.py\n+++ b/tests/test_basic.py\n@@ -1222,6 +1222,26 @@ def index():\n         t.join()\n \n \n+@pytest.mark.parametrize('debug', [True, False])\n+@pytest.mark.parametrize('use_debugger', [True, False])\n+@pytest.mark.parametrize('use_reloader', [True, False])\n+@pytest.mark.parametrize('propagate_exceptions', [None, True, False])\n+def test_werkzeug_passthrough_errors(monkeypatch, debug, use_debugger,\n+                                     use_reloader, propagate_exceptions):\n+    rv = {}\n+\n+    # Mocks werkzeug.serving.run_simple method\n+    def run_simple_mock(*args, **kwargs):\n+        rv['passthrough_errors'] = kwargs.get('passthrough_errors')\n+\n+    app = flask.Flask(__name__)\n+    monkeypatch.setattr(werkzeug.serving, 'run_simple', run_simple_mock)\n+    app.config['PROPAGATE_EXCEPTIONS'] = propagate_exceptions\n+    app.run(debug=debug, use_debugger=use_debugger, use_reloader=use_reloader)\n+    # make sure werkzeug always passes errors through\n+    assert rv['passthrough_errors']\n+\n+\n def test_max_content_length():\n     app = flask.Flask(__name__)\n     app.config['MAX_CONTENT_LENGTH'] = 64\n",
+    "human_comments": [
+      {
+        "id": 48687951,
+        "file_path": "tests/test_basic.py",
+        "line": null,
+        "user": "ThiefMaster",
+        "body": "wouldn't `pytest.mark.parametrize` be better for this?\n"
+      },
+      {
+        "id": 48688016,
+        "file_path": "tests/test_basic.py",
+        "line": null,
+        "user": "miguelgrinberg",
+        "body": "Yep, makes sense. I'm not super familiar with py.test, I wasn't aware you can do that. I'll change it.\n"
+      }
+    ]
+  },
+  {
+    "pr_number": 1164,
+    "pr_url": "https://github.com/pallets/flask/pull/1164",
+    "title": "Adds 2 tests for Flask.run method",
+    "commit_sha": "3f67fe94f1e46908e53283a54f4bf74c524efd94",
+    "changed_files_count": 1,
+    "diff": "diff --git a/tests/test_basic.py b/tests/test_basic.py\nindex c66e8eac17..55fd155aa8 100644\n--- a/tests/test_basic.py\n+++ b/tests/test_basic.py\n@@ -22,6 +22,7 @@\n from werkzeug.exceptions import BadRequest, NotFound, Forbidden\n from werkzeug.http import parse_date\n from werkzeug.routing import BuildError\n+import werkzeug.serving\n \n \n def test_options_work():\n@@ -1506,3 +1507,30 @@ def index(self, test='a'):\n     assert rv.data == b'a'\n     rv = app.test_client().open('/b/')\n     assert rv.data == b'b'\n+\n+\n+def test_run_defaults(monkeypatch):\n+    rv = {}\n+\n+    # Mocks werkzeug.serving.run_simple method\n+    def run_simple_mock(*args, **kwargs):\n+        rv['result'] = 'running...'\n+\n+    app = flask.Flask(__name__)\n+    monkeypatch.setattr(werkzeug.serving, 'run_simple', run_simple_mock)\n+    app.run()\n+    assert rv['result'] == 'running...'\n+\n+\n+def test_run_server_port(monkeypatch):\n+    rv = {}\n+\n+    # Mocks werkzeug.serving.run_simple method\n+    def run_simple_mock(hostname, port, application, *args, **kwargs):\n+        rv['result'] = 'running on %s:%s ...' % (hostname, port)\n+\n+    app = flask.Flask(__name__)\n+    monkeypatch.setattr(werkzeug.serving, 'run_simple', run_simple_mock)\n+    hostname, port = 'localhost', 8000\n+    app.run(hostname, port, debug=True)\n+    assert rv['result'] == 'running on %s:%s ...' % (hostname, port)\n",
+    "human_comments": [
+      {
+        "id": 16936550,
+        "file_path": "flask/testsuite/basic.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "The problem with this is that you now have this method patched in some other test, and that test might rely on the actual behavior of run_simple.\n\nThe testsuite should get ported to py.test anyways, which should provide tools for monkeypatching.\n"
+      },
+      {
+        "id": 16936577,
+        "file_path": "flask/testsuite/basic.py",
+        "line": null,
+        "user": "pbu88",
+        "body": "True that, I can fix it by storing the patched method and restoring it after the test.\n"
+      },
+      {
+        "id": 16936697,
+        "file_path": "flask/testsuite/basic.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "Please do that, and don't forget to use `try...finally` for this. Meanwhile i see if i can port the testsuite...\n"
+      },
+      {
+        "id": 17520052,
+        "file_path": ".idea/flask.iml",
+        "line": null,
+        "user": "untitaker",
+        "body": "Your IDE has added quite a lot of stuff to the project. You can edit `.git/info/exclude` to automatically ignore these files (similar syntax to `.gitignore`).\n"
+      }
+    ]
+  },
+  {
+    "pr_number": 1291,
+    "pr_url": "https://github.com/pallets/flask/pull/1291",
+    "title": "Fixed and intuitivized exception handling",
+    "commit_sha": "b31252db55cfac4605ad917d34eaa55fff248a38",
+    "changed_files_count": 2,
+    "diff": "diff --git a/flask/app.py b/flask/app.py\nindex 1f7df2e8cb..6baee3a621 100644\n--- a/flask/app.py\n+++ b/flask/app.py\n@@ -8,18 +8,18 @@\n     :copyright: (c) 2015 by Armin Ronacher.\n     :license: BSD, see LICENSE for more details.\n \"\"\"\n-\n import os\n import sys\n from threading import Lock\n from datetime import timedelta\n from itertools import chain\n from functools import update_wrapper\n+from collections import Mapping\n \n from werkzeug.datastructures import ImmutableDict\n from werkzeug.routing import Map, Rule, RequestRedirect, BuildError\n from werkzeug.exceptions import HTTPException, InternalServerError, \\\n-     MethodNotAllowed, BadRequest\n+     MethodNotAllowed, BadRequest, default_exceptions\n \n from .helpers import _PackageBoundObject, url_for, get_flashed_messages, \\\n      locked_cached_property, _endpoint_from_view_func, find_package\n@@ -33,7 +33,7 @@\n      _default_template_ctx_processor\n from .signals import request_started, request_finished, got_request_exception, \\\n      request_tearing_down, appcontext_tearing_down\n-from ._compat import reraise, string_types, text_type, integer_types\n+from ._compat import reraise, string_types, text_type, integer_types, iterkeys\n \n # a lock used for logger initialization\n _logger_lock = Lock()\n@@ -1078,6 +1078,21 @@ def decorator(f):\n             return f\n         return decorator\n \n+    @staticmethod\n+    def _get_exc_class_and_code(exc_class_or_code):\n+        \"\"\"Ensure that we register only exceptions as handler keys\"\"\"\n+        if isinstance(exc_class_or_code, integer_types):\n+            exc_class = default_exceptions[exc_class_or_code]\n+        else:\n+            exc_class = exc_class_or_code\n+        \n+        assert issubclass(exc_class, Exception)\n+        \n+        if issubclass(exc_class, HTTPException):\n+            return exc_class, exc_class.code\n+        else:\n+            return exc_class, None\n+    \n     @setupmethod\n     def errorhandler(self, code_or_exception):\n         \"\"\"A decorator that is used to register a function give a given\n@@ -1136,16 +1151,21 @@ def register_error_handler(self, code_or_exception, f):\n \n     @setupmethod\n     def _register_error_handler(self, key, code_or_exception, f):\n-        if isinstance(code_or_exception, HTTPException):\n-            code_or_exception = code_or_exception.code\n-        if isinstance(code_or_exception, integer_types):\n-            assert code_or_exception != 500 or key is None, \\\n-                'It is currently not possible to register a 500 internal ' \\\n-                'server error on a per-blueprint level.'\n-            self.error_handler_spec.setdefault(key, {})[code_or_exception] = f\n-        else:\n-            self.error_handler_spec.setdefault(key, {}).setdefault(None, []) \\\n-                .append((code_or_exception, f))\n+        \"\"\"\n+        :type key: None|str\n+        :type code_or_exception: int|T<=Exception\n+        :type f: callable\n+        \"\"\"\n+        if isinstance(code_or_exception, HTTPException):  # old broken behavior\n+            raise ValueError(\n+                'Tried to register a handler for an exception instance {0!r}. '\n+                'Handlers can only be registered for exception classes or HTTP error codes.'\n+                .format(code_or_exception))\n+        \n+        exc_class, code = self._get_exc_class_and_code(code_or_exception)\n+        \n+        handlers = self.error_handler_spec.setdefault(key, {}).setdefault(code, {})\n+        handlers[exc_class] = f\n \n     @setupmethod\n     def template_filter(self, name=None):\n@@ -1386,6 +1406,33 @@ def url_defaults(self, f):\n         self.url_default_functions.setdefault(None, []).append(f)\n         return f\n \n+    def _find_error_handler(self, e):\n+        \"\"\"Finds a registered error handler for the request\u2019s blueprint.\n+        If neither blueprint nor App has a suitable handler registered, returns None\n+        \"\"\"\n+        exc_class, code = self._get_exc_class_and_code(type(e))\n+        \n+        def find_superclass(handler_map):\n+            if not handler_map:\n+                return None\n+            for superclass in exc_class.__mro__:\n+                if superclass is BaseException:\n+                    return None\n+                handler = handler_map.get(superclass)\n+                if handler is not None:\n+                    handler_map[exc_class] = handler  # cache for next time exc_class is raised\n+                    return handler\n+            return None\n+        \n+        # try blueprint handlers\n+        handler = find_superclass(self.error_handler_spec.get(request.blueprint, {}).get(code))\n+        \n+        if handler is not None:\n+            return handler\n+        \n+        # fall back to app handlers\n+        return find_superclass(self.error_handler_spec[None].get(code))\n+\n     def handle_http_exception(self, e):\n         \"\"\"Handles an HTTP exception.  By default this will invoke the\n         registered error handlers and fall back to returning the\n@@ -1393,15 +1440,12 @@ def handle_http_exception(self, e):\n \n         .. versionadded:: 0.3\n         \"\"\"\n-        handlers = self.error_handler_spec.get(request.blueprint)\n         # Proxy exceptions don't have error codes.  We want to always return\n         # those unchanged as errors\n         if e.code is None:\n             return e\n-        if handlers and e.code in handlers:\n-            handler = handlers[e.code]\n-        else:\n-            handler = self.error_handler_spec[None].get(e.code)\n+        \n+        handler = self._find_error_handler(e)\n         if handler is None:\n             return e\n         return handler(e)\n@@ -1443,20 +1487,15 @@ def handle_user_exception(self, e):\n         # wants the traceback preserved in handle_http_exception.  Of course\n         # we cannot prevent users from trashing it themselves in a custom\n         # trap_http_exception method so that's their fault then.\n-\n-        blueprint_handlers = ()\n-        handlers = self.error_handler_spec.get(request.blueprint)\n-        if handlers is not None:\n-            blueprint_handlers = handlers.get(None, ())\n-        app_handlers = self.error_handler_spec[None].get(None, ())\n-        for typecheck, handler in chain(blueprint_handlers, app_handlers):\n-            if isinstance(e, typecheck):\n-                return handler(e)\n-\n+        \n         if isinstance(e, HTTPException) and not self.trap_http_exception(e):\n             return self.handle_http_exception(e)\n \n-        reraise(exc_type, exc_value, tb)\n+        handler = self._find_error_handler(e)\n+        \n+        if handler is None:\n+            reraise(exc_type, exc_value, tb)\n+        return handler(e)\n \n     def handle_exception(self, e):\n         \"\"\"Default exception handling that kicks in when an exception\n@@ -1470,7 +1509,7 @@ def handle_exception(self, e):\n         exc_type, exc_value, tb = sys.exc_info()\n \n         got_request_exception.send(self, exception=e)\n-        handler = self.error_handler_spec[None].get(500)\n+        handler = self._find_error_handler(InternalServerError())\n \n         if self.propagate_exceptions:\n             # if we want to repropagate the exception, we can attempt to\ndiff --git a/tests/test_user_error_handler.py b/tests/test_user_error_handler.py\nnew file mode 100644\nindex 0000000000..78f4de3cc0\n--- /dev/null\n+++ b/tests/test_user_error_handler.py\n@@ -0,0 +1,113 @@\n+# -*- coding: utf-8 -*-\n+from werkzeug.exceptions import Forbidden, InternalServerError\n+import flask\n+\n+\n+def test_error_handler_subclass():\n+\tapp = flask.Flask(__name__)\n+\n+\tclass ParentException(Exception):\n+\t\tpass\n+\n+\tclass ChildExceptionUnregistered(ParentException):\n+\t\tpass\n+\n+\tclass ChildExceptionRegistered(ParentException):\n+\t\tpass\n+\n+\t@app.errorhandler(ParentException)\n+\tdef parent_exception_handler(e):\n+\t\tassert isinstance(e, ParentException)\n+\t\treturn 'parent'\n+\n+\t@app.errorhandler(ChildExceptionRegistered)\n+\tdef child_exception_handler(e):\n+\t\tassert isinstance(e, ChildExceptionRegistered)\n+\t\treturn 'child-registered'\n+\n+\t@app.route('/parent')\n+\tdef parent_test():\n+\t\traise ParentException()\n+\n+\t@app.route('/child-unregistered')\n+\tdef unregistered_test():\n+\t\traise ChildExceptionUnregistered()\n+\n+\t@app.route('/child-registered')\n+\tdef registered_test():\n+\t\traise ChildExceptionRegistered()\n+\n+\n+\tc = app.test_client()\n+\n+\tassert c.get('/parent').data == b'parent'\n+\tassert c.get('/child-unregistered').data == b'parent'\n+\tassert c.get('/child-registered').data == b'child-registered'\n+\n+\n+def test_error_handler_http_subclass():\n+\tapp = flask.Flask(__name__)\n+\n+\tclass ForbiddenSubclassRegistered(Forbidden):\n+\t\tpass\n+\n+\tclass ForbiddenSubclassUnregistered(Forbidden):\n+\t\tpass\n+\n+\t@app.errorhandler(403)\n+\tdef code_exception_handler(e):\n+\t\tassert isinstance(e, Forbidden)\n+\t\treturn 'forbidden'\n+\n+\t@app.errorhandler(ForbiddenSubclassRegistered)\n+\tdef subclass_exception_handler(e):\n+\t\tassert isinstance(e, ForbiddenSubclassRegistered)\n+\t\treturn 'forbidden-registered'\n+\n+\t@app.route('/forbidden')\n+\tdef forbidden_test():\n+\t\traise Forbidden()\n+\n+\t@app.route('/forbidden-registered')\n+\tdef registered_test():\n+\t\traise ForbiddenSubclassRegistered()\n+\n+\t@app.route('/forbidden-unregistered')\n+\tdef unregistered_test():\n+\t\traise ForbiddenSubclassUnregistered()\n+\n+\n+\tc = app.test_client()\n+\n+\tassert c.get('/forbidden').data == b'forbidden'\n+\tassert c.get('/forbidden-unregistered').data == b'forbidden'\n+\tassert c.get('/forbidden-registered').data == b'forbidden-registered'\n+\n+\n+def test_error_handler_blueprint():\n+\tbp = flask.Blueprint('bp', __name__)\n+\t\n+\t@bp.errorhandler(500)\n+\tdef bp_exception_handler(e):\n+\t\treturn 'bp-error'\n+\t\n+\t@bp.route('/error')\n+\tdef bp_test():\n+\t\traise InternalServerError()\n+\t\n+\tapp = flask.Flask(__name__)\n+\t\n+\t@app.errorhandler(500)\n+\tdef app_exception_handler(e):\n+\t\treturn 'app-error'\n+\t\n+\t@app.route('/error')\n+\tdef app_test():\n+\t\traise InternalServerError()\n+\t\n+\tapp.register_blueprint(bp, url_prefix='/bp')\n+\t\n+\tc = app.test_client()\n+\t\n+\tassert c.get('/error').data == b'app-error'\n+\tassert c.get('/bp/error').data == b'bp-error'\n\\ No newline at end of file\n",
+    "human_comments": [
+      {
+        "id": 22241578,
         "file_path": "flask/app.py",
-        "line": 1975,
-        "user": "Derrreks",
-        "body": "Note that this line is missing a closing parenthesis"
+        "line": null,
+        "user": "untitaker",
+        "body": "Just style: Prefix this with `_`, because people otherwise would start relying on it.\n"
+      },
+      {
+        "id": 22241629,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "Also, you don't use this anywhere.\n"
+      },
+      {
+        "id": 22273774,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "flying-sheep",
+        "body": "oh, seems like i forgot to remove it; it\u2019s actually not used at all.\n"
+      },
+      {
+        "id": 22294859,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "I probably can answer that: `app.handle_exception` is not looking up the 500-error-code in the blueprint mappings.\n"
+      },
+      {
+        "id": 22294863,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "IMO a more verbose error message is needed here.\n"
+      },
+      {
+        "id": 22294897,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "Why does this parameter exist? It doesn't seem like this is considering BP handlers at all.\n"
+      },
+      {
+        "id": 22298301,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "flying-sheep",
+        "body": "why not make it do that, then?\n\nthis PR simplifies `handle_http_exception` and `handle_user_exception`, anyway :)\n"
+      },
+      {
+        "id": 22298303,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "flying-sheep",
+        "body": "look at `__getitem__`: if `blueprint` was not None at initialization, it falls back to the app\u2019s `error_handler_spec`.\n\nit\u2019s simple: `app.error_handler_spec[foobar][code][e_or_c]` works like so:\n1. if `e_or_c` is a code, set `e_or_c = default_exceptions[e_or_c]`\n2. if the dict `self.data` contains `e_or_c`, return the value\n3. if the dict `self.fallback` contains `e_or_c`, return that value\n\n`self.fallback` is {} for `app.error_handler_spec[None]` and `app.error_handler_spec[None]` itself for `app.error_handler_spec[something]`.\n"
+      },
+      {
+        "id": 22298336,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "flying-sheep",
+        "body": "true\n"
+      },
+      {
+        "id": 22298382,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "Hmm, this seems like an awful lot of indirection. Now we have a magical dictionary inside another dictionary, where the magical one falls back to looking up in other magical dictionaries if it couldn't find any errorhandler. Couldn't we bake all of this logic into `_find_error_handler`?\n"
+      },
+      {
+        "id": 22298452,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "flying-sheep",
+        "body": "true, especially since we need to use `_find_error_handler` everywhere anyway because a blueprint might have no registered errorhandlers.\n\nso either we create a `ExceptionHandlerDict` for every blueprint on blueprint creation (and remove `_find_error_handler`), or we make `_find_error_handler` do everything and remove `ExceptionHandlerDict`.\n"
+      },
+      {
+        "id": 22399914,
+        "file_path": "flask/app.py",
+        "line": 1159,
+        "user": "untitaker",
+        "body": "You catch this broken behavior here, but try to correct it in _ensure_exc_class.\n"
+      },
+      {
+        "id": 22399939,
+        "file_path": "flask/app.py",
+        "line": 1424,
+        "user": "untitaker",
+        "body": "Could we store this handler at `d[e]` to avoid traversing the MRO every time?\n"
+      },
+      {
+        "id": 22426750,
+        "file_path": "flask/app.py",
+        "line": 1159,
+        "user": "flying-sheep",
+        "body": "i don\u2019t correct it. `_ensure_exc_class` is called here on a exception class or error code and in `_find_error_handler` on an exception instance.\n\ni could have written two different methods (or inlined the code), but decided not to.\n"
+      },
+      {
+        "id": 22426967,
+        "file_path": "flask/app.py",
+        "line": 1159,
+        "user": "untitaker",
+        "body": "> and in _find_error_handler on an exception instance.\n\nAh I see. But why not do `_ensure_exc_class(type(e))` in `_find_error_handler`? This saves one typecheck and makes for a cleaner API.\n"
+      },
+      {
+        "id": 22427026,
+        "file_path": "flask/app.py",
+        "line": 1167,
+        "user": "untitaker",
+        "body": "Why special-case HTTP exceptions and have a separate dict for each status code?\n\nSince `self.error_handler_spec` is already backwards-incompatible (as in, code that directly modifies it breaks), I think we can remove this distinction. I suppose that also eliminates the need for most of the code in `_ensure_exc_class`.\n"
+      },
+      {
+        "id": 22427191,
+        "file_path": "flask/app.py",
+        "line": 1424,
+        "user": "flying-sheep",
+        "body": "you mean `d[exc_class]`. `e` is an exception instance.\n\nand that would create an edge case:\n\n`````` python\napp = Flask(__name__)\n\n# hierarchy: Exception \u2192 OSError \u2192 ConnectionError \u2192 ConnectionAbortedError\n\n@app.errorhandler(OSError)\ndef handle_os_error(e):\n    ...\n\napp.run()\n\nsomewhere during runtime some connection aborts, a ConnectionAbortedError instance is raised. now, due to your caching: `d[ConnectionAbortedError] is d[OSError]`\n\nalso during runtime (after that), some new error handler is registered. (not inconceivable):\n\n```python\n@app.errorhandler(ConnectionError)\ndef handle_connection_error(e):\n    ...\n``````\n\nwell fuck, now another ConnectionAbortedError instance being raised won\u2019t trigger the newly registered error handler but the cached one!\n\n---\n\nwe can circumvent this by instead having a separate dict holding all cached handlers, and clearing all superclasses of a newly registered exception from that cache handler dict. like so:\n\n``` python\n# in __init__:\nself._error_handler_cache = {}\n\n# in _register_error_handler:\nfor superclass in exc_class.mro():\n    try:\n        del self._error_handler_cache[superclass]\n    except KeyError:\n        pass\n\n# in _find_error_handler \u2192 find_superclass (after \u201cif not d: return None\u201d):\nhandler = self._error_handler_cache.get(exc_class)\nif handler is not None:\n    return handler\n\n# in _find_error_handler \u2192 find_superclass (before returning the handler):\nself._error_handler_cache[exc_class] = handler\n```\n"
+      },
+      {
+        "id": 22427322,
+        "file_path": "flask/app.py",
+        "line": 1424,
+        "user": "untitaker",
+        "body": "> You mean exc_class\n\nAh, yes, sorry.\n\n> also during runtime (after that), some new error handler is registered. (not inconceivable)\n\nThis is explicitly forbidden by Flask. See the `setupmethod` decorator. So basically you don't have any requests until all your errorhandlers are set up.\n"
+      },
+      {
+        "id": 22427436,
+        "file_path": "flask/app.py",
+        "line": 1167,
+        "user": "flying-sheep",
+        "body": "i thought about that as well and thought that it\u2019s clearer this way. all handlers are neatly grouped and accessing them in debug mode using `self.error_handler_spec[None][403]` will list you everything.\n\nbut i\u2019m not particularly attached to this.\n\nPS: we can preserve partial backwards compat by using a dict subclass for the `error_handler_spec[foobar]` level by redefining `__setitem__`:\n\n``` python\nclass BackwardsCompatDict(dict):\n    def __init__(self, app):\n        super().__init__()\n        self.app = app\n    def __setitem__(self, key, value):\n        if callable(value) and not isinstance(value, dict):\n            exc_class, code = self.app._ensure_exc_class(key)\n            self.setdefault(code, {})[exc_class] = value\n        else:\n            super().__setitem__(key, handler_or_handlerdict)\n\napp.error_handler_spec[None][403] = forbidden_handler\nassert app.error_handler_spec[None][403][Forbidden] is forbidden_handler\n```\n"
+      },
+      {
+        "id": 22427500,
+        "file_path": "flask/app.py",
+        "line": 1159,
+        "user": "flying-sheep",
+        "body": "i agree, will change\n"
+      },
+      {
+        "id": 22427507,
+        "file_path": "flask/app.py",
+        "line": 1167,
+        "user": "untitaker",
+        "body": "> we can preserve partial backwards compat\n\nI think the partial backwards-compatibility is not worth the \"magic\", especially as it's partial.\n"
+      },
+      {
+        "id": 22427618,
+        "file_path": "flask/app.py",
+        "line": 1424,
+        "user": "flying-sheep",
+        "body": "seems kinda arbitrary, but makes things easier for us here.\n\nalso i don\u2019t see any problems with your caching idea in that case. i\u2019ll just add `d[exc_class] = handler` and we\u2019re done, since the loop will only do one iteration when hitting the cache. (`exc_class.mro()[0] is exc_class`, so `d.get(superclass)` will always return something from then on)\n"
+      },
+      {
+        "id": 22427699,
+        "file_path": "flask/app.py",
+        "line": 1424,
+        "user": "untitaker",
+        "body": "> seems kinda arbitrary, but makes things easier for us here.\n\nI suppose otherwise errorhandler and route registration has to be threadsafe.\n\n> i\u2019ll just add d[exc_class] = handler\n\nYup, sounds good.\n"
+      },
+      {
+        "id": 23507450,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "From [SO](https://stackoverflow.com/questions/19713585/whats-the-difference-between-the-mro-method-and-the-mro-attribute-of-a-clas):\n\n> mro() is called on instanciation and stores its result in **mro**. They don't really have the same purpose.\n\nI don't even understand why this method is made available in Python, but using `__mro__` seems more fitting. (brought up by @mitsuhiko in IRC)\n"
+      },
+      {
+        "id": 27855463,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "adambyrtek",
+        "body": "Start comment with a capital letter.\n"
+      },
+      {
+        "id": 27855991,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "adambyrtek",
+        "body": "Would be nice to have a more meaningful argument name, like `handlers` or `handler_dict`?\n"
+      },
+      {
+        "id": 27856289,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "adambyrtek",
+        "body": "Is the caching really worth it? In the context of request handling and exception processing a few iterations down the MRO seem insignificant.\n"
+      },
+      {
+        "id": 28194454,
+        "file_path": "flask/app.py",
+        "line": 1159,
+        "user": "flying-sheep",
+        "body": "hmm, a bit out of the loop after all this time.\n\ni see a `assert issubclass(exc_class, Exception)` in `_get_exc_class_and_code`, which would already catch this.\n\nshould i simply replace that assertion with the more meaningful `ValueError`?\n"
+      },
+      {
+        "id": 28194462,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "flying-sheep",
+        "body": "done\n"
+      },
+      {
+        "id": 28194469,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "flying-sheep",
+        "body": "[mro() can be overridden by a metaclass that\u2019s why it\u2019s there](https://docs.python.org/3/library/stdtypes.html#class.mro)\n\nbut since its result is stored in `__mro__`, i\u2019ll use that.\n"
+      },
+      {
+        "id": 28194487,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "flying-sheep",
+        "body": "well, it\u2019s just two lines and doesn\u2019t do any harm, since the registered handlers may not be changed after app start (so the cache will never be invalidated)\n\nand the few bytes more memory are even less significant than the cycles saved ;)\n"
+      },
+      {
+        "id": 28194510,
+        "file_path": "flask/app.py",
+        "line": 1159,
+        "user": "untitaker",
+        "body": "I think it's fine as-is. You did address this suggestion, it seems:\n\n> But why not do _ensure_exc_class(type(e)) in _find_error_handler? This saves one typecheck and makes for a cleaner API.\n"
+      },
+      {
+        "id": 28194511,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "flying-sheep",
+        "body": "done\n"
+      },
+      {
+        "id": 28194546,
+        "file_path": "flask/app.py",
+        "line": 1159,
+        "user": "flying-sheep",
+        "body": "ok. github really isn\u2019t perfect for sub-issues like this. i have to write \u201cdone\u201d everywhere i actually did something, or trust on the automated diff collapsing (outdated change)\n"
+      },
+      {
+        "id": 28194560,
+        "file_path": "flask/app.py",
+        "line": 1159,
+        "user": "untitaker",
+        "body": "> trust on the automated diff collapsing (outdated change)\n\nThat usually works pretty well.\n"
+      },
+      {
+        "id": 28194595,
+        "file_path": "flask/app.py",
+        "line": 1091,
+        "user": "untitaker",
+        "body": "I think we missed this discussion: https://github.com/mitsuhiko/flask/pull/1291#discussion_r22427026\n\n> Why special-case HTTP exceptions and have a separate dict for each status code?\n> \n> Since self.error_handler_spec is already backwards-incompatible (as in, code that directly modifies it breaks), I think we can remove this distinction. I suppose that also eliminates the need for most of the code in _ensure_exc_class.\n"
+      },
+      {
+        "id": 28194604,
+        "file_path": "flask/app.py",
+        "line": 1091,
+        "user": "untitaker",
+        "body": "Hmm, maybe we should ignore that for now and maybe do a second refactoring. The current one is big enough as-is.\n"
+      },
+      {
+        "id": 28194660,
+        "file_path": "flask/app.py",
+        "line": 1091,
+        "user": "flying-sheep",
+        "body": "why not. it isn\u2019t as if it would do any harm to have them grouped like this\n"
+      },
+      {
+        "id": 28196502,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "adambyrtek",
+        "body": "This might be confusing during debugging, since the handler dict mutates during execution, but you might argue that when debugging you should be aware of the cache, so I don't feel strongly about this, I just don't like premature optimization.\n"
+      },
+      {
+        "id": 28196526,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "Good point about debugging, with that in mind I'd like to remove that cache as well. @adambyrtek care to setup a PR, since this is already merged?\n"
+      },
+      {
+        "id": 28196655,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "flying-sheep",
+        "body": "i\u2019m curious: what\u2019s the problem during debugging?\n"
+      },
+      {
+        "id": 28196749,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "They might not invalidate themselves correctly when the programmer is testing a very recent change they made, or otherwise warp results. As @adambyrtek said, you could argue that the programmer should simply be _aware_ of those caches (as is the case with e.g. browser caches -- I always use icognito mode to test e.g. redirecting behavior), but in our case, it's questionable whether this cache even gives us any performance benefits (which is clearly the case with browser caches).\n\nAlso: In my opinion, caches are a tempting (and usually bad) answer to CPU-bound performance problems: They are simply there for delaying the writing of a more performant algorithm.\n"
+      },
+      {
+        "id": 28197044,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "flying-sheep",
+        "body": "hmm, as i said: it\u2019s forbidden to register new routes after app start, so the cache will never be invalidated.\n\nthat\u2019s the main reason i implemented it: very simple and no potential for failure.\n\nand the more efficient algorithm may be to statically include all exceptions in the mapping upon app start. so basically replacing my JIT cache with an AOT cache :smile: \n"
+      },
+      {
+        "id": 28197144,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "> and the more efficient algorithm may be to statically include all exceptions in the mapping upon app start. so basically replacing my JIT cache with an AOT cache :smile:\n\nThat's impossible, we can't reach subclasses from parent classes.\n\nHonestly I think instead of proving that additional code doesn't cause problems, it should be proven that the absence of the code doesn't cause problems. IOW, the right for the cache to exist doesn't lie in \"it doesn't cause any problems\", but rather \"it improves performance\". And that has to be proven instead of saying \"why not\".\n"
+      },
+      {
+        "id": 28197254,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "flying-sheep",
+        "body": "well, that\u2019s obvious, but it\u2019s not clear if it does _notably so_\n"
+      },
+      {
+        "id": 28197331,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "Just took a more exact look at the cache impl, it seems half as expensive as I\nthought. I somehow assumed we used a second dict for it.\n"
+      },
+      {
+        "id": 28197338,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "Just looked through the old discussions, and it was me who suggested this cache\nin the first place >.<\n"
+      },
+      {
+        "id": 28198881,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "flying-sheep",
+        "body": "haha, i also didn\u2019t remember. but yeah :laughing: \n"
+      },
+      {
+        "id": 28202747,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "adambyrtek",
+        "body": "Looks like you have a consensus, so I'm not trying to reopen this, just explaining my arguments:\n- When Flask user encounters issues with error handling he is likely to check the contents of `error_handler_spec` during debugging, and be surprised that there are entries there which haven't been explicitly registered.\n- On first sight `error_handler_spec` seems to be modified only when a new handler is registered. It's not obvious that we pass one of the inner dicts by reference and modify it inside `_find_error_handler`, especially since the name doesn't suggest that the function has side effects.\n\nAnyway, I think optimizations are worth introducing when there is a real performance problem to solve, and I don't see any problem here... Just my 2 cents.\n"
+      },
+      {
+        "id": 28202892,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "The part about the user expecting no further errorhandlers in that dict is a\npretty good argument... I'm still not really sure whether we should keep that\nin or not. \n\nPlease cont. at https://github.com/mitsuhiko/flask/issues/1433, this discussion\nis kinda hidden.\n\nOn Sun, Apr 12, 2015 at 04:38:17AM -0700, Adam Byrtek wrote:\n\n> > @@ -1370,6 +1390,33 @@ def url_defaults(self, f):\n> >          self.url_default_functions.setdefault(None, []).append(f)\n> >          return f\n> > -    def _find_error_handler(self, e):\n> > -        \"\"\"Finds a registered error handler for the request\u2019s blueprint.\n> > -        If neither blueprint nor App has a suitable handler registered, returns None\n> > -        \"\"\"\n> > -        exc_class, code = self._get_exc_class_and_code(type(e))\n> > -   \n> > -        def find_superclass(d):\n> > -            if not d:\n> > -                return None\n> > -            for superclass in exc_class.mro():\n> > -                if superclass is BaseException:\n> > -                    return None\n> > -                handler = d.get(superclass)\n> > -                if handler is not None:\n> > -                    d[exc_class] = handler  # cache for next time exc_class is raised\n> \n> Looks like you have a consensus, so I'm not trying to reopen this, just explaining my arguments:\n> - When Flask user encounters issues with error handling he is likely to check the contents of `error_handler_spec` during debugging, and be surprised that there are entries there which haven't been explicitly registered.\n> - On first sight `error_handler_spec` seems to be modified only when a new handler is registered. It's not obvious that we pass one of the inner dicts by reference and modify it inside `_find_error_handler`, especially since the name doesn't suggest that the function has side effects.\n> \n> Anyway, I think optimizations are worth introducing when there is a real performance problem to solve, and I don't see any problem here... Just my 2 cents.\n> \n> ---\n> \n> Reply to this email directly or view it on GitHub:\n> https://github.com/mitsuhiko/flask/pull/1291/files#r28202747\n"
+      }
+    ]
+  },
+  {
+    "pr_number": 1860,
+    "pr_url": "https://github.com/pallets/flask/pull/1860",
+    "title": "Coverage for test_static_path_deprecated and test_static_url_path",
+    "commit_sha": "668cee87d40e2f47705d9259905e704229041c53",
+    "changed_files_count": 1,
+    "diff": "diff --git a/tests/test_basic.py b/tests/test_basic.py\nindex 8c5b0def95..45cad691e3 100644\n--- a/tests/test_basic.py\n+++ b/tests/test_basic.py\n@@ -1116,6 +1116,25 @@ def test_static_files():\n     rv.close()\n \n \n+def test_static_path_deprecated():\n+    with pytest.deprecated_call():\n+        app = flask.Flask(__name__, static_path='/foo')\n+    app.testing = True\n+    rv = app.test_client().get('/foo/index.html')\n+    assert rv.status_code == 200\n+    with app.test_request_context():\n+        assert flask.url_for('static', filename='index.html') == '/foo/index.html'\n+\n+\n+def test_static_url_path():\n+    app = flask.Flask(__name__, static_url_path='/foo')\n+    app.testing = True\n+    rv = app.test_client().get('/foo/index.html')\n+    assert rv.status_code == 200\n+    with app.test_request_context():\n+        assert flask.url_for('static', filename='index.html') == '/foo/index.html'\n+\n+\n def test_none_response():\n     app = flask.Flask(__name__)\n     app.testing = True\n",
+    "human_comments": [
+      {
+        "id": 65620107,
+        "file_path": "tests/test_basic.py",
+        "line": null,
+        "user": "jeffwidman",
+        "body": "Typo should be `deprecated` (without an \"i\")\n"
+      },
+      {
+        "id": 65622043,
+        "file_path": "tests/test_basic.py",
+        "line": null,
+        "user": "ThiefMaster",
+        "body": "Simply amend the commit and force-push\n"
+      },
+      {
+        "id": 65622109,
+        "file_path": "tests/test_basic.py",
+        "line": null,
+        "user": "jphilipsen05",
+        "body": "Thanks for fixing that. Were you able to fix it or do I need to fix and push again?\n"
+      }
+    ]
+  },
+  {
+    "pr_number": 1422,
+    "pr_url": "https://github.com/pallets/flask/pull/1422",
+    "title": "Allow custom jinja environments",
+    "commit_sha": "08ac3aa4e3739e20d385c4c2973893945f228470",
+    "changed_files_count": 2,
+    "diff": "diff --git a/flask/app.py b/flask/app.py\nindex 1f7df2e8cb..54ebc35878 100644\n--- a/flask/app.py\n+++ b/flask/app.py\n@@ -157,6 +157,11 @@ class Flask(_PackageBoundObject):\n     #: :class:`~flask.Response` for more information.\n     response_class = Response\n \n+    #: The class that is used for the Jinja environment.\n+    #:\n+    #: .. versionadded:: 0.11\n+    jinja_env_class = Environment\n+\n     #: The class that is used for the :data:`~flask.g` instance.\n     #:\n     #: Example use cases for a custom class:\n@@ -680,7 +685,7 @@ def create_jinja_environment(self):\n                 options['auto_reload'] = self.config['TEMPLATES_AUTO_RELOAD']\n             else:\n                 options['auto_reload'] = self.debug\n-        rv = Environment(self, **options)\n+        rv = self.jinja_env_class(self, **options)\n         rv.globals.update(\n             url_for=url_for,\n             get_flashed_messages=get_flashed_messages,\ndiff --git a/tests/test_templating.py b/tests/test_templating.py\nindex 7285c18c96..132f42a4f4 100644\n--- a/tests/test_templating.py\n+++ b/tests/test_templating.py\n@@ -361,3 +361,13 @@ def handle(x, record):\n             app.config['EXPLAIN_TEMPLATE_LOADING'] = old_load_setting\n \n     assert len(called) == 1\n+\n+def test_custom_jinja_env():\n+    class CustomEnvironment(flask.templating.Environment):\n+        pass\n+\n+    class CustomFlask(flask.Flask):\n+        jinja_env_class = CustomEnvironment\n+\n+    app = CustomFlask(__name__)\n+    assert isinstance(app.jinja_env, CustomEnvironment)\n",
+    "human_comments": [
+      {
+        "id": 27795597,
+        "file_path": "flask/app.py",
+        "line": 162,
+        "user": "ThiefMaster",
+        "body": "Not sure if this should be 0.11 or 1.0 - currently both versions are used, with 1.0 being more common but the current package version in `flask/__init__.py` being 0.11\n"
+      },
+      {
+        "id": 27795829,
+        "file_path": "flask/app.py",
+        "line": 162,
+        "user": "untitaker",
+        "body": "I always assumed it is 1.0 but I'm not sure whether we should release an intermediate version.\n"
+      },
+      {
+        "id": 28194246,
+        "file_path": "flask/app.py",
+        "line": 162,
+        "user": "ThiefMaster",
+        "body": "Hm I guess for now the different versions don't really matter as long as it's cleaned up before whatever the next release's version number will be ;)\n"
+      }
+    ]
+  },
+  {
+    "pr_number": 1876,
+    "pr_url": "https://github.com/pallets/flask/pull/1876",
+    "title": "Add negative test for json.jsonify",
+    "commit_sha": "bc0cd789baee21bde0260e79f356a7f368a06b2b",
+    "changed_files_count": 1,
+    "diff": "diff --git a/tests/test_basic.py b/tests/test_basic.py\nindex 8c5b0def95..bb7da0b818 100644\n--- a/tests/test_basic.py\n+++ b/tests/test_basic.py\n@@ -1031,6 +1031,14 @@ def test_jsonify_mimetype():\n         assert rv.mimetype == 'application/vnd.api+json'\n \n \n+def test_jsonify_args_and_kwargs_check():\n+    app = flask.Flask(__name__)\n+    with app.test_request_context():\n+        with pytest.raises(TypeError) as e:\n+            flask.jsonify('fake args', kwargs='fake')\n+        assert 'behavior undefined' in str(e.value)\n+\n+\n def test_url_generation():\n     app = flask.Flask(__name__)\n \n",
+    "human_comments": [
+      {
+        "id": 65747611,
+        "file_path": "tests/test_basic.py",
+        "line": 1039,
+        "user": "dawranliou",
+        "body": "Check for `TypeError`'s message\n"
+      }
+    ]
+  },
+  {
+    "pr_number": 1262,
+    "pr_url": "https://github.com/pallets/flask/pull/1262",
+    "title": "Add JSONIFY_END_WITH_NEWLINE config variable",
+    "commit_sha": "d9402fc0c03353b6d2659297682e578d695476ce",
+    "changed_files_count": 3,
+    "diff": "diff --git a/CHANGES b/CHANGES\nindex 654ef87aa2..3c267dfafa 100644\n--- a/CHANGES\n+++ b/CHANGES\n@@ -53,7 +53,11 @@ Version 1.0\n - Add \"pretty\" and \"compressed\" separators definitions in jsonify() method.\n   Reduces JSON response size when JSONIFY_PRETTYPRINT_REGULAR=False by removing\n   unnecessary white space included by default after separators.\n-\n+- JSON responses are now terminated with a newline character, because it is a\n+  convention that UNIX text files end with a newline and some clients don't\n+  deal well when this newline is missing. See\n+  https://github.com/mitsuhiko/flask/pull/1262 -- this came up originally as a\n+  part of https://github.com/kennethreitz/httpbin/issues/168\n \n Version 0.10.2\n --------------\ndiff --git a/flask/json.py b/flask/json.py\nindex a525052150..b554b9ffaa 100644\n--- a/flask/json.py\n+++ b/flask/json.py\n@@ -200,8 +200,9 @@ def htmlsafe_dump(obj, fp, **kwargs):\n \n def jsonify(*args, **kwargs):\n     \"\"\"Creates a :class:`~flask.Response` with the JSON representation of\n-    the given arguments with an :mimetype:`application/json` mimetype.  The arguments\n-    to this function are the same as to the :class:`dict` constructor.\n+    the given arguments with an :mimetype:`application/json` mimetype.  The\n+    arguments to this function are the same as to the :class:`dict`\n+    constructor.\n \n     Example usage::\n \n@@ -241,9 +242,13 @@ def get_current_user():\n         indent = 2\n         separators = (', ', ': ')\n \n-    return current_app.response_class(dumps(dict(*args, **kwargs),\n-        indent=indent, separators=separators),\n+    # Note that we add '\\n' to end of response\n+    # (see https://github.com/mitsuhiko/flask/pull/1262)\n+    rv = current_app.response_class(\n+        (dumps(dict(*args, **kwargs), indent=indent, separators=separators),\n+         '\\n'),\n         mimetype='application/json')\n+    return rv\n \n \n def tojson_filter(obj, **kwargs):\ndiff --git a/tests/test_basic.py b/tests/test_basic.py\nindex 2f024a5dbc..e214aee79b 100644\n--- a/tests/test_basic.py\n+++ b/tests/test_basic.py\n@@ -942,7 +942,7 @@ def test_make_response_with_response_instance():\n         rv = flask.make_response(\n             flask.jsonify({'msg': 'W00t'}), 400)\n         assert rv.status_code == 400\n-        assert rv.data == b'{\\n  \"msg\": \"W00t\"\\n}'\n+        assert rv.data == b'{\\n  \"msg\": \"W00t\"\\n}\\n'\n         assert rv.mimetype == 'application/json'\n \n         rv = flask.make_response(\n@@ -963,7 +963,7 @@ def test_jsonify_no_prettyprint():\n     app = flask.Flask(__name__)\n     app.config.update({\"JSONIFY_PRETTYPRINT_REGULAR\": False})\n     with app.test_request_context():\n-        compressed_msg = b'{\"msg\":{\"submsg\":\"W00t\"},\"msg2\":\"foobar\"}'\n+        compressed_msg = b'{\"msg\":{\"submsg\":\"W00t\"},\"msg2\":\"foobar\"}\\n'\n         uncompressed_msg = {\n             \"msg\": {\n                 \"submsg\": \"W00t\"\n@@ -982,7 +982,7 @@ def test_jsonify_prettyprint():\n     with app.test_request_context():\n         compressed_msg = {\"msg\":{\"submsg\":\"W00t\"},\"msg2\":\"foobar\"}\n         pretty_response =\\\n-            b'{\\n  \"msg\": {\\n    \"submsg\": \"W00t\"\\n  }, \\n  \"msg2\": \"foobar\"\\n}'\n+            b'{\\n  \"msg\": {\\n    \"submsg\": \"W00t\"\\n  }, \\n  \"msg2\": \"foobar\"\\n}\\n'\n \n         rv = flask.make_response(\n             flask.jsonify(compressed_msg), 200)\n",
+    "human_comments": [
+      {
+        "id": 21422553,
+        "file_path": "flask/json.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "Hmm, on second thought, couldn't we make this more efficient? String concatenation is fast, but it's still creating a new string. Passing an iterable to the response should be faster I think.\n"
+      },
+      {
+        "id": 21429300,
+        "file_path": "flask/json.py",
+        "line": null,
+        "user": "msabramo",
+        "body": "Good point. Here ya go:\n\n```\n\u276f git commit -av --amend\n[JSONIFY_END_WITH_NEWLINE d9402fc] Make `jsonify` terminate responses with a newline\n Date: Sat Nov 29 08:58:50 2014 -0800\n 3 files changed, 17 insertions(+), 8 deletions(-)\n\n\u276f git push -f msabramo JSONIFY_END_WITH_NEWLINE\nCounting objects: 4, done.\nDelta compression using up to 8 threads.\nCompressing objects: 100% (4/4), done.\nWriting objects: 100% (4/4), 593 bytes | 0 bytes/s, done.\nTotal 4 (delta 3), reused 0 (delta 0)\nTo git@github.com:msabramo/flask.git\n + 410d853...d9402fc JSONIFY_END_WITH_NEWLINE -> JSONIFY_END_WITH_NEWLINE (forced update)\n```\n"
+      }
+    ]
+  },
+  {
+    "pr_number": 1560,
+    "pr_url": "https://github.com/pallets/flask/pull/1560",
+    "title": "Fix static route when using host_matching = True",
+    "commit_sha": "55113157c25dcc4af271f5f69513bdc23c4f5ce5",
+    "changed_files_count": 4,
+    "diff": "diff --git a/AUTHORS b/AUTHORS\nindex cc157dc41b..33210243e7 100644\n--- a/AUTHORS\n+++ b/AUTHORS\n@@ -21,6 +21,7 @@ Patches and Suggestions\n - Florent Xicluna\n - Georg Brandl\n - Jeff Widman @jeffwidman\n+- Joshua Bronson @jab\n - Justin Quick\n - Kenneth Reitz\n - Keyan Pishdadian\ndiff --git a/CHANGES b/CHANGES\nindex 7c50d0c75e..a660b9aaca 100644\n--- a/CHANGES\n+++ b/CHANGES\n@@ -14,6 +14,11 @@ Major release, unreleased\n - Change default configuration `JSONIFY_PRETTYPRINT_REGULAR=False`. jsonify()\n   method returns compressed response by default, and pretty response in\n   debug mode.\n+- Change Flask.__init__ to accept two new keyword arguments, ``host_matching``\n+  and ``static_host``. This enables ``host_matching`` to be set properly by the\n+  time the constructor adds the static route, and enables the static route to\n+  be properly associated with the required host. (``#1559``)\n+\n \n Version 0.12.1\n --------------\ndiff --git a/flask/app.py b/flask/app.py\nindex c8540b5f01..48245a8e66 100644\n--- a/flask/app.py\n+++ b/flask/app.py\n@@ -123,6 +123,9 @@ class Flask(_PackageBoundObject):\n     .. versionadded:: 0.11\n        The `root_path` parameter was added.\n \n+    .. versionadded:: 0.13\n+       The `host_matching` and `static_host` parameters were added.\n+\n     :param import_name: the name of the application package\n     :param static_url_path: can be used to specify a different path for the\n                             static files on the web.  Defaults to the name\n@@ -130,6 +133,13 @@ class Flask(_PackageBoundObject):\n     :param static_folder: the folder with static files that should be served\n                           at `static_url_path`.  Defaults to the ``'static'``\n                           folder in the root path of the application.\n+                          folder in the root path of the application. Defaults\n+                          to None.\n+    :param host_matching: sets the app's ``url_map.host_matching`` to the given\n+                          given value. Defaults to False.\n+    :param static_host: the host to use when adding the static route. Defaults\n+                        to None. Required when using ``host_matching=True``\n+                        with a ``static_folder`` configured.\n     :param template_folder: the folder that contains the templates that should\n                             be used by the application.  Defaults to\n                             ``'templates'`` folder in the root path of the\n@@ -337,7 +347,8 @@ def _set_request_globals_class(self, value):\n     session_interface = SecureCookieSessionInterface()\n \n     def __init__(self, import_name, static_path=None, static_url_path=None,\n-                 static_folder='static', template_folder='templates',\n+                 static_folder='static', static_host=None,\n+                 host_matching=False, template_folder='templates',\n                  instance_path=None, instance_relative_config=False,\n                  root_path=None):\n         _PackageBoundObject.__init__(self, import_name,\n@@ -525,19 +536,22 @@ def __init__(self, import_name, static_path=None, static_url_path=None,\n         #:    app.url_map.converters['list'] = ListConverter\n         self.url_map = Map()\n \n+        self.url_map.host_matching = host_matching\n+\n         # tracks internally if the application already handled at least one\n         # request.\n         self._got_first_request = False\n         self._before_request_lock = Lock()\n \n-        # register the static folder for the application.  Do that even\n-        # if the folder does not exist.  First of all it might be created\n-        # while the server is running (usually happens during development)\n-        # but also because google appengine stores static files somewhere\n-        # else when mapped with the .yml file.\n+        # Add a static route using the provided static_url_path, static_host,\n+        # and static_folder iff there is a configured static_folder.\n+        # Note we do this without checking if static_folder exists.\n+        # For one, it might be created while the server is running (e.g. during\n+        # development). Also, Google App Engine stores static files somewhere\n         if self.has_static_folder:\n+            assert bool(static_host) == host_matching, 'Invalid static_host/host_matching combination'\n             self.add_url_rule(self.static_url_path + '/<path:filename>',\n-                              endpoint='static',\n+                              endpoint='static', host=static_host,\n                               view_func=self.send_static_file)\n \n         #: The click command line context for this application.  Commands\ndiff --git a/tests/test_basic.py b/tests/test_basic.py\nindex 942eb0f6fc..fbb69f9ec9 100644\n--- a/tests/test_basic.py\n+++ b/tests/test_basic.py\n@@ -1171,6 +1171,25 @@ def test_static_url_path():\n         assert flask.url_for('static', filename='index.html') == '/foo/index.html'\n \n \n+def test_static_route_with_host_matching():\n+    app = flask.Flask(__name__, host_matching=True, static_host='example.com')\n+    c = app.test_client()\n+    rv = c.get('http://example.com/static/index.html')\n+    assert rv.status_code == 200\n+    rv.close()\n+    with app.test_request_context():\n+       rv = flask.url_for('static', filename='index.html', _external=True)\n+       assert rv == 'http://example.com/static/index.html'\n+    # Providing static_host without host_matching=True should error.\n+    with pytest.raises(Exception):\n+        flask.Flask(__name__, static_host='example.com')\n+    # Providing host_matching=True with static_folder but without static_host should error.\n+    with pytest.raises(Exception):\n+        flask.Flask(__name__, host_matching=True)\n+    # Providing host_matching=True without static_host but with static_folder=None should not error.\n+    flask.Flask(__name__, host_matching=True, static_folder=None)\n+\n+\n def test_none_response():\n     app = flask.Flask(__name__)\n     app.testing = True\n",
+    "human_comments": [
+      {
+        "id": 37706342,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "jab",
+        "body": "(Not related to this PR, but in the line above in this comment it says \"Do that even if the folder does not exist\", yet the the code that follows actually only runs `if self.has_static_folder`. Is the comment wrong or just confusing?)\n"
+      },
+      {
+        "id": 37706351,
+        "file_path": "tests/test_basic.py",
+        "line": null,
+        "user": "jab",
+        "body": "This would give 404 without my fix\n"
+      },
+      {
+        "id": 37706355,
+        "file_path": "tests/test_basic.py",
+        "line": null,
+        "user": "jab",
+        "body": "This would give `'http:///static/foo'` without my fix\n"
+      }
+    ]
+  },
+  {
+    "pr_number": 1728,
+    "pr_url": "https://github.com/pallets/flask/pull/1728",
+    "title": "Add JSONIFY_MIMETYPE configuration variable",
+    "commit_sha": "2cfaf04e8336714295ac271238bcd2b936f3683f",
+    "changed_files_count": 5,
+    "diff": "diff --git a/CHANGES b/CHANGES\nindex 37fe8694fc..2befdc8730 100644\n--- a/CHANGES\n+++ b/CHANGES\n@@ -76,6 +76,7 @@ Version 1.0\n - ``flask.ext`` is now deprecated (pull request ``#1484``).\n - ``send_from_directory`` now raises BadRequest if the filename is invalid on\n   the server OS (pull request ``#1763``).\n+- Added the ``JSONIFY_MIMETYPE`` configuration variable (pull request ``#1728``).\n \n Version 0.10.2\n --------------\ndiff --git a/docs/config.rst b/docs/config.rst\nindex 8cef0686e3..1d9445d358 100644\n--- a/docs/config.rst\n+++ b/docs/config.rst\n@@ -183,6 +183,7 @@ The following configuration values are used internally by Flask:\n                                   if they are not requested by an\n                                   XMLHttpRequest object (controlled by\n                                   the ``X-Requested-With`` header)\n+``JSONIFY_MIMETYPE``              MIME type used for jsonify responses.\n ``TEMPLATES_AUTO_RELOAD``         Whether to check for modifications of\n                                   the template source and reload it\n                                   automatically. By default the value is\ndiff --git a/flask/app.py b/flask/app.py\nindex 7522c8e0f6..6a5391060d 100644\n--- a/flask/app.py\n+++ b/flask/app.py\n@@ -315,6 +315,7 @@ def _set_request_globals_class(self, value):\n         'JSON_AS_ASCII':                        True,\n         'JSON_SORT_KEYS':                       True,\n         'JSONIFY_PRETTYPRINT_REGULAR':          True,\n+        'JSONIFY_MIMETYPE':                     'application/json',\n         'TEMPLATES_AUTO_RELOAD':                None,\n     })\n \ndiff --git a/flask/json.py b/flask/json.py\nindex cfc28c53a5..2bd4790231 100644\n--- a/flask/json.py\n+++ b/flask/json.py\n@@ -264,7 +264,7 @@ def get_current_user():\n \n     return current_app.response_class(\n         (dumps(data, indent=indent, separators=separators), '\\n'),\n-        mimetype='application/json'\n+        mimetype=current_app.config['JSONIFY_MIMETYPE']\n     )\n \n \ndiff --git a/tests/test_basic.py b/tests/test_basic.py\nindex 3daca9cd70..8c5b0def95 100644\n--- a/tests/test_basic.py\n+++ b/tests/test_basic.py\n@@ -1019,6 +1019,18 @@ def test_jsonify_prettyprint():\n         assert rv.data == pretty_response\n \n \n+def test_jsonify_mimetype():\n+    app = flask.Flask(__name__)\n+    app.config.update({\"JSONIFY_MIMETYPE\": 'application/vnd.api+json'})\n+    with app.test_request_context():\n+        msg = {\n+            \"msg\": {\"submsg\": \"W00t\"},\n+        }\n+        rv = flask.make_response(\n+            flask.jsonify(msg), 200)\n+        assert rv.mimetype == 'application/vnd.api+json'\n+\n+\n def test_url_generation():\n     app = flask.Flask(__name__)\n \n",
+    "human_comments": [
+      {
+        "id": 52982620,
+        "file_path": "tests/test_basic.py",
+        "line": 1024,
+        "user": "ThiefMaster",
+        "body": "why not just `app.config['JSONIFY_MIMETYPE'] = '...'`?\n"
+      },
+      {
+        "id": 52982663,
+        "file_path": "docs/config.rst",
+        "line": null,
+        "user": "ThiefMaster",
+        "body": "\"MIME type\"?\n"
+      },
+      {
+        "id": 53270820,
+        "file_path": "tests/test_basic.py",
+        "line": 1024,
+        "user": "sloria",
+        "body": "I am following the conventions used in similar tests. For example: https://github.com/mitsuhiko/flask/pull/1728/files#diff-9e9ddedef65dec3da86063a067839e65R1021\n"
+      },
+      {
+        "id": 53270857,
+        "file_path": "docs/config.rst",
+        "line": null,
+        "user": "sloria",
+        "body": "Good call. Fixed.\n"
+      }
+    ]
+  },
+  {
+    "pr_number": 1222,
+    "pr_url": "https://github.com/pallets/flask/pull/1222",
+    "title": "Set TEMPLATE_AUTO_RELOAD default value to None",
+    "commit_sha": "6a6acfbb091229ccc28215e92868fa45ec4c2d79",
+    "changed_files_count": 4,
+    "diff": "diff --git a/CHANGES b/CHANGES\nindex 5df663ea80..29218ade06 100644\n--- a/CHANGES\n+++ b/CHANGES\n@@ -23,9 +23,8 @@ Version 1.0\n - Added :meth:`flask.Config.from_json`.\n - Added :attr:`flask.Flask.config_class`.\n - Added :meth:`flask.config.Config.get_namespace`.\n-- Added ``TEMPLATES_AUTO_RELOAD`` config key. If disabled the\n-  templates will be reloaded only if the application is running in\n-  debug mode. For higher performance it\u2019s possible to disable that.\n+- Templates are no longer automatically reloaded outside of debug mode. This\n+  can be configured with the new ``TEMPLATES_AUTO_RELOAD`` config key.\n - Added a workaround for a limitation in Python 3.3's namespace loader.\n - Added support for explicit root paths when using Python 3.3's namespace\n   packages.\ndiff --git a/docs/config.rst b/docs/config.rst\nindex 5f2b275e16..c8468d02e6 100644\n--- a/docs/config.rst\n+++ b/docs/config.rst\n@@ -182,12 +182,11 @@ The following configuration values are used internally by Flask:\n                                   if they are not requested by an\n                                   XMLHttpRequest object (controlled by\n                                   the ``X-Requested-With`` header)\n-``TEMPLATES_AUTO_RELOAD``         Flask checks if template was modified each\n-                                  time it is requested and reloads it if\n-                                  necessary. But disk I/O is costly and it may\n-                                  be viable to disable this feature by setting\n-                                  this key to ``False``. This option does not\n-                                  affect debug mode.\n+``TEMPLATES_AUTO_RELOAD``         Whether to check for modifications of\n+                                  the template source and reload it\n+                                  automatically. By default the value is\n+                                  ``None`` which means that Flask checks\n+                                  original file only in debug mode.\n ``EXPLAIN_TEMPLATE_LOADING``      If this is enabled then every attempt to\n                                   load a template will write an info\n                                   message to the logger explaining the\ndiff --git a/flask/app.py b/flask/app.py\nindex 4e97605e82..9efa53d763 100644\n--- a/flask/app.py\n+++ b/flask/app.py\n@@ -297,7 +297,7 @@ def _set_request_globals_class(self, value):\n         'JSON_AS_ASCII':                        True,\n         'JSON_SORT_KEYS':                       True,\n         'JSONIFY_PRETTYPRINT_REGULAR':          True,\n-        'TEMPLATES_AUTO_RELOAD':                True,\n+        'TEMPLATES_AUTO_RELOAD':                None,\n     })\n \n     #: The rule object to use for URL rules created.  This is used by\n@@ -673,8 +673,10 @@ def create_jinja_environment(self):\n         if 'autoescape' not in options:\n             options['autoescape'] = self.select_jinja_autoescape\n         if 'auto_reload' not in options:\n-            options['auto_reload'] = self.debug \\\n-                or self.config['TEMPLATES_AUTO_RELOAD']\n+            if self.config['TEMPLATES_AUTO_RELOAD'] is not None:\n+                options['auto_reload'] = self.config['TEMPLATES_AUTO_RELOAD']\n+            else:\n+                options['auto_reload'] = self.debug\n         rv = Environment(self, **options)\n         rv.globals.update(\n             url_for=url_for,\ndiff --git a/tests/test_templating.py b/tests/test_templating.py\nindex 5aaf90815e..862b9b1f9e 100644\n--- a/tests/test_templating.py\n+++ b/tests/test_templating.py\n@@ -296,12 +296,36 @@ def index():\n     assert rv.data == b'<h1>Jameson</h1>'\n \n def test_templates_auto_reload():\n+    # debug is False, config option is None\n     app = flask.Flask(__name__)\n-    assert app.config['TEMPLATES_AUTO_RELOAD']\n-    assert app.jinja_env.auto_reload\n+    assert app.debug is False\n+    assert app.config['TEMPLATES_AUTO_RELOAD'] is None\n+    assert app.jinja_env.auto_reload is False\n+    # debug is False, config option is False\n     app = flask.Flask(__name__)\n     app.config['TEMPLATES_AUTO_RELOAD'] = False\n-    assert not app.jinja_env.auto_reload\n+    assert app.debug is False\n+    assert app.jinja_env.auto_reload is False\n+    # debug is False, config option is True\n+    app = flask.Flask(__name__)\n+    app.config['TEMPLATES_AUTO_RELOAD'] = True\n+    assert app.debug is False\n+    assert app.jinja_env.auto_reload is True\n+    # debug is True, config option is None\n+    app = flask.Flask(__name__)\n+    app.config['DEBUG'] = True\n+    assert app.config['TEMPLATES_AUTO_RELOAD'] is None\n+    assert app.jinja_env.auto_reload is True\n+    # debug is True, config option is False\n+    app = flask.Flask(__name__)\n+    app.config['DEBUG'] = True\n+    app.config['TEMPLATES_AUTO_RELOAD'] = False\n+    assert app.jinja_env.auto_reload is False\n+    # debug is True, config option is True\n+    app = flask.Flask(__name__)\n+    app.config['DEBUG'] = True\n+    app.config['TEMPLATES_AUTO_RELOAD'] = True\n+    assert app.jinja_env.auto_reload is True\n \n def test_template_loader_debugging(test_apps):\n     from blueprintapp import app\n",
+    "human_comments": [
+      {
+        "id": 19381865,
+        "file_path": "docs/config.rst",
+        "line": null,
+        "user": "untitaker",
+        "body": "I think the first sentence can be shortened to:\n\n> Whether to check for modifications of the original file and reload automatically.\n"
+      },
+      {
+        "id": 19381869,
+        "file_path": "tests/test_templating.py",
+        "line": 328,
+        "user": "untitaker",
+        "body": ":+1:\n"
+      },
+      {
+        "id": 19381885,
+        "file_path": "CHANGES",
+        "line": null,
+        "user": "untitaker",
+        "body": "Please change this to: \"Templates are no longer automatically reloaded outside of debug mode. This can be configured with the new `TEMPLATES_AUTO_RELOAD` config key.\" Or something similar. The idea behind that rephrasing is that the important change (Flask's behavior changes) goes first, and then the user is told how to revert to the original behavior.\n"
+      },
+      {
+        "id": 19714074,
+        "file_path": "docs/config.rst",
+        "line": null,
+        "user": "untitaker",
+        "body": "Sorry it took me so long to respond to this. Could you change this to use double-backticks?\n"
+      }
+    ]
+  },
+  {
+    "pr_number": 1716,
+    "pr_url": "https://github.com/pallets/flask/pull/1716",
+    "title": "Fix typo",
+    "commit_sha": "07fdd1930b947b2cc074706ecdfea908ffdb05b9",
+    "changed_files_count": 3,
+    "diff": "diff --git a/docs/reqcontext.rst b/docs/reqcontext.rst\nindex d7d74fbf8d..51cd66f6da 100644\n--- a/docs/reqcontext.rst\n+++ b/docs/reqcontext.rst\n@@ -69,7 +69,7 @@ find a piece of code that looks very much like this::\n         with self.request_context(environ):\n             try:\n                 response = self.full_dispatch_request()\n-            except Exception, e:\n+            except Exception as e:\n                 response = self.make_response(self.handle_exception(e))\n             return response(environ, start_response)\n \ndiff --git a/flask/app.py b/flask/app.py\nindex f75dd818d7..da1998c630 100644\n--- a/flask/app.py\n+++ b/flask/app.py\n@@ -421,9 +421,8 @@ def __init__(self, import_name, static_path=None, static_url_path=None,\n         #: A dictionary with lists of functions that should be called after\n         #: each request.  The key of the dictionary is the name of the blueprint\n         #: this function is active for, ``None`` for all requests.  This can for\n-        #: example be used to open database connections or getting hold of the\n-        #: currently logged in user.  To register a function here, use the\n-        #: :meth:`after_request` decorator.\n+        #: example be used to close database connections. To register a function\n+        #: here, use the :meth:`after_request` decorator.\n         self.after_request_funcs = {}\n \n         #: A dictionary with lists of functions that are called after\n@@ -791,8 +790,7 @@ def run(self, host=None, port=None, debug=None, **options):\n \n         It is not recommended to use this function for development with\n         automatic reloading as this is badly supported.  Instead you should\n-        be using the :command:`flask` command line script's ``runserver``\n-        support.\n+        be using the :command:`flask` command line script's ``run`` support.\n \n         .. admonition:: Keep in Mind\n \ndiff --git a/flask/config.py b/flask/config.py\nindex d2eeb8378a..6f643a99b4 100644\n--- a/flask/config.py\n+++ b/flask/config.py\n@@ -222,7 +222,7 @@ def get_namespace(self, namespace, lowercase=True, trim_namespace=True):\n             app.config['IMAGE_STORE_BASE_URL'] = 'http://img.website.com'\n             image_store_config = app.config.get_namespace('IMAGE_STORE_')\n \n-        The resulting dictionary `image_store` would look like::\n+        The resulting dictionary `image_store_config` would look like::\n \n             {\n                 'type': 'fs',\n",
+    "human_comments": [
+      {
+        "id": 51725693,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "davidism",
+        "body": "The mention of current user doesn't really make sense here either.  Maybe just change it to \"close database connections and other open resources\"?  Or just remove the second part entirely.\n"
+      },
+      {
+        "id": 51835017,
+        "file_path": "flask/app.py",
+        "line": null,
+        "user": "lord63",
+        "body": "Although I'm OK with the original way, still can't come out a good example to show the second part. I've remove it.\n\nI'll squash the commits when ready to merge.\n"
+      }
+    ]
+  },
+  {
+    "pr_number": 1763,
+    "pr_url": "https://github.com/pallets/flask/pull/1763",
+    "title": "Raise BadRequest if static file name is invalid",
+    "commit_sha": "4d012cb3b3ecc072caa56e098a5aba964b1b7f43",
+    "changed_files_count": 2,
+    "diff": "diff --git a/flask/helpers.py b/flask/helpers.py\nindex 3210772d45..a1ee52a66c 100644\n--- a/flask/helpers.py\n+++ b/flask/helpers.py\n@@ -27,7 +27,7 @@\n     from urlparse import quote as url_quote\n \n from werkzeug.datastructures import Headers\n-from werkzeug.exceptions import NotFound\n+from werkzeug.exceptions import BadRequest, NotFound\n \n # this was moved in 0.7\n try:\n@@ -618,8 +618,11 @@ def download_file(filename):\n     filename = safe_join(directory, filename)\n     if not os.path.isabs(filename):\n         filename = os.path.join(current_app.root_path, filename)\n-    if not os.path.isfile(filename):\n-        raise NotFound()\n+    try:\n+        if not os.path.isfile(filename):\n+            raise NotFound()\n+    except (TypeError, ValueError):\n+        raise BadRequest()\n     options.setdefault('conditional', True)\n     return send_file(filename, **options)\n \ndiff --git a/tests/test_helpers.py b/tests/test_helpers.py\nindex 620fd792e0..aae57b2ab3 100644\n--- a/tests/test_helpers.py\n+++ b/tests/test_helpers.py\n@@ -15,6 +15,7 @@\n import datetime\n import flask\n from logging import StreamHandler\n+from werkzeug.exceptions import BadRequest\n from werkzeug.http import parse_cache_control_header, parse_options_header\n from werkzeug.http import http_date\n from flask._compat import StringIO, text_type\n@@ -504,6 +505,14 @@ def test_send_from_directory(self):\n             assert rv.data.strip() == b'Hello Subdomain'\n             rv.close()\n \n+    def test_send_from_directory_bad_request(self):\n+        app = flask.Flask(__name__)\n+        app.testing = True\n+        app.root_path = os.path.join(os.path.dirname(__file__),\n+                                     'test_apps', 'subdomaintestmodule')\n+        with app.test_request_context():\n+            with pytest.raises(BadRequest):\n+                flask.send_from_directory('static', 'bad\\x00')\n \n class TestLogging(object):\n \n",
+    "human_comments": [
+      {
+        "id": 58166032,
+        "file_path": "flask/helpers.py",
+        "line": null,
+        "user": "ThiefMaster",
+        "body": "`except (TypeError, ValueError):`\n"
+      },
+      {
+        "id": 58166065,
+        "file_path": "tests/test_helpers.py",
+        "line": null,
+        "user": "ThiefMaster",
+        "body": "why not use `pytest.raises` to ensure an exception is raised?\n\n```\nwith pytest.raises(ValueError):\n    flask.send_from_directory('static', 'bad\\x00')\n```\n"
+      },
+      {
+        "id": 58202961,
+        "file_path": "tests/test_helpers.py",
+        "line": null,
+        "user": "ThiefMaster",
+        "body": "This shouldn't be necessary - the previous line already raises an exception so you never get here\n"
+      }
+    ]
+  },
+  {
+    "pr_number": 1671,
+    "pr_url": "https://github.com/pallets/flask/pull/1671",
+    "title": "Add support for serializing top-level arrays to JSON",
+    "commit_sha": "daceb3e3a028b4b408c4bbdbdef0047f1de3a7c9",
+    "changed_files_count": 5,
+    "diff": "diff --git a/AUTHORS b/AUTHORS\nindex b0a4b6f388..d081d9f832 100644\n--- a/AUTHORS\n+++ b/AUTHORS\n@@ -15,9 +15,11 @@ Patches and Suggestions\n - Chris Grindstaff\n - Christopher Grebs\n - Daniel Neuh\u00e4user\n+- David Lord @davidism\n - Edmond Burnett\n - Florent Xicluna\n - Georg Brandl\n+- Jeff Widman @jeffwidman\n - Justin Quick\n - Kenneth Reitz\n - Keyan Pishdadian\n@@ -32,4 +34,3 @@ Patches and Suggestions\n - Stephane Wirtel\n - Thomas Schranz\n - Zhao Xiaohong\n-- David Lord @davidism\ndiff --git a/CHANGES b/CHANGES\nindex e3d9b0eb9c..41b054d729 100644\n--- a/CHANGES\n+++ b/CHANGES\n@@ -8,6 +8,9 @@ Version 1.0\n \n (release date to be announced, codename to be selected)\n \n+- Added support to serializing top-level arrays to :func:`flask.jsonify`. This\n+  introduces a security risk in ancient browsers. See\n+  :ref:`json_security` for details.\n - Added before_render_template signal.\n - Added `**kwargs` to :meth:`flask.Test.test_client` to support passing\n   additional keyword arguments to the constructor of\ndiff --git a/docs/security.rst b/docs/security.rst\nindex 55ac91fee5..3e97834dcc 100644\n--- a/docs/security.rst\n+++ b/docs/security.rst\n@@ -95,81 +95,12 @@ the form validation framework, which does not exist in Flask.\n JSON Security\n -------------\n \n-.. admonition:: ECMAScript 5 Changes\n-\n-   Starting with ECMAScript 5 the behavior of literals changed.  Now they\n-   are not constructed with the constructor of ``Array`` and others, but\n-   with the builtin constructor of ``Array`` which closes this particular\n-   attack vector.\n-\n-JSON itself is a high-level serialization format, so there is barely\n-anything that could cause security problems, right?  You can't declare\n-recursive structures that could cause problems and the only thing that\n-could possibly break are very large responses that can cause some kind of\n-denial of service at the receiver's side.\n-\n-However there is a catch.  Due to how browsers work the CSRF issue comes\n-up with JSON unfortunately.  Fortunately there is also a weird part of the\n-JavaScript specification that can be used to solve that problem easily and\n-Flask is kinda doing that for you by preventing you from doing dangerous\n-stuff.  Unfortunately that protection is only there for\n-:func:`~flask.jsonify` so you are still at risk when using other ways to\n-generate JSON.\n-\n-So what is the issue and how to avoid it?  The problem are arrays at\n-top-level in JSON.  Imagine you send the following data out in a JSON\n-request.  Say that's exporting the names and email addresses of all your\n-friends for a part of the user interface that is written in JavaScript.\n-Not very uncommon:\n-\n-.. sourcecode:: javascript\n-\n-    [\n-        {\"username\": \"admin\",\n-         \"email\": \"admin@localhost\"}\n-    ]\n-\n-And it is doing that of course only as long as you are logged in and only\n-for you.  And it is doing that for all ``GET`` requests to a certain URL,\n-say the URL for that request is\n-``http://example.com/api/get_friends.json``.\n-\n-So now what happens if a clever hacker is embedding this to his website\n-and social engineers a victim to visiting his site:\n-\n-.. sourcecode:: html\n-\n-    <script type=text/javascript>\n-    var captured = [];\n-    var oldArray = Array;\n-    function Array() {\n-      var obj = this, id = 0, capture = function(value) {\n-        obj.__defineSetter__(id++, capture);\n-        if (value)\n-          captured.push(value);\n-      };\n-      capture();\n-    }\n-    </script>\n-    <script type=text/javascript\n-      src=http://example.com/api/get_friends.json></script>\n-    <script type=text/javascript>\n-    Array = oldArray;\n-    // now we have all the data in the captured array.\n-    </script>\n-\n-If you know a bit of JavaScript internals you might know that it's\n-possible to patch constructors and register callbacks for setters.  An\n-attacker can use this (like above) to get all the data you exported in\n-your JSON file.  The browser will totally ignore the :mimetype:`application/json`\n-mimetype if :mimetype:`text/javascript` is defined as content type in the script\n-tag and evaluate that as JavaScript.  Because top-level array elements are\n-allowed (albeit useless) and we hooked in our own constructor, after that\n-page loaded the data from the JSON response is in the `captured` array.\n-\n-Because it is a syntax error in JavaScript to have an object literal\n-(``{...}``) toplevel an attacker could not just do a request to an\n-external URL with the script tag to load up the data.  So what Flask does\n-is to only allow objects as toplevel elements when using\n-:func:`~flask.jsonify`.  Make sure to do the same when using an ordinary\n-JSON generate function.\n+In Flask 0.10 and lower, :func:`~flask.jsonify` did not serialize top-level\n+arrays to JSON. This was because of a security vulnerability in ECMAScript 4.\n+\n+ECMAScript 5 closed this vulnerability, so only extremely old browsers are\n+still vulnerable. All of these browsers have `other more serious\n+vulnerabilities\n+<https://github.com/mitsuhiko/flask/issues/248#issuecomment-59934857>`_, so\n+this behavior was changed and :func:`~flask.jsonify` now supports serializing\n+arrays.\ndiff --git a/flask/json.py b/flask/json.py\nindex 885214d3b5..9bcaf72c5a 100644\n--- a/flask/json.py\n+++ b/flask/json.py\n@@ -199,10 +199,22 @@ def htmlsafe_dump(obj, fp, **kwargs):\n \n \n def jsonify(*args, **kwargs):\n-    \"\"\"Creates a :class:`~flask.Response` with the JSON representation of\n-    the given arguments with an :mimetype:`application/json` mimetype.  The\n-    arguments to this function are the same as to the :class:`dict`\n-    constructor.\n+    \"\"\"This function wraps :func:`dumps` to add a few enhancements that make\n+    life easier.  It turns the JSON output into a :class:`~flask.Response`\n+    object with the :mimetype:`application/json` mimetype.  For convenience, it\n+    also converts multiple arguments into an array or multiple keyword arguments\n+    into a dict.  This means that both ``jsonify(1,2,3)`` and\n+    ``jsonify([1,2,3])`` serialize to ``[1,2,3]``.\n+\n+    For clarity, the JSON serialization behavior has the following differences\n+    from :func:`dumps`:\n+\n+    1. Single argument: Passed straight through to :func:`dumps`.\n+    2. Multiple arguments: Converted to an array before being passed to\n+    :func:`dumps`.\n+    3. Multiple keyword arguments: Converted to a dict before being passed to\n+    :func:`dumps`.\n+    4. Both args and kwargs: Behavior undefined and will throw an exception.\n \n     Example usage::\n \n@@ -222,8 +234,10 @@ def get_current_user():\n             \"id\": 42\n         }\n \n-    For security reasons only objects are supported toplevel.  For more\n-    information about this, have a look at :ref:`json-security`.\n+\n+    .. versionchanged:: 1.0\n+       Added support for serializing top-level arrays. This introduces a\n+       security risk in ancient browsers. See :ref:`json_security` for details.\n \n     This function's response will be pretty printed if it was not requested\n     with ``X-Requested-With: XMLHttpRequest`` to simplify debugging unless\n@@ -242,11 +256,21 @@ def get_current_user():\n         indent = 2\n         separators = (', ', ': ')\n \n+    if args and kwargs:\n+        raise TypeError(\n+            \"jsonify() behavior undefined when passed both args and kwargs\"\n+        )\n+    elif len(args) == 1: # single args are passed directly to dumps()\n+        data = args[0]\n+    elif args: # convert multiple args into an array\n+        data = list(args)\n+    else: # convert kwargs to a dict\n+        data = dict(kwargs)\n+\n     # Note that we add '\\n' to end of response\n     # (see https://github.com/mitsuhiko/flask/pull/1262)\n     rv = current_app.response_class(\n-        (dumps(dict(*args, **kwargs), indent=indent, separators=separators),\n-         '\\n'),\n+        (dumps(data, indent=indent, separators=separators), '\\n'),\n         mimetype='application/json')\n     return rv\n \ndiff --git a/tests/test_helpers.py b/tests/test_helpers.py\nindex 8d09327f78..620fd792e0 100644\n--- a/tests/test_helpers.py\n+++ b/tests/test_helpers.py\n@@ -31,24 +31,6 @@ def has_encoding(name):\n \n class TestJSON(object):\n \n-    def test_jsonify_date_types(self):\n-        \"\"\"Test jsonify with datetime.date and datetime.datetime types.\"\"\"\n-\n-        test_dates = (\n-            datetime.datetime(1973, 3, 11, 6, 30, 45),\n-            datetime.date(1975, 1, 5)\n-        )\n-\n-        app = flask.Flask(__name__)\n-        c = app.test_client()\n-\n-        for i, d in enumerate(test_dates):\n-            url = '/datetest{0}'.format(i)\n-            app.add_url_rule(url, str(i), lambda val=d: flask.jsonify(x=val))\n-            rv = c.get(url)\n-            assert rv.mimetype == 'application/json'\n-            assert flask.json.loads(rv.data)['x'] == http_date(d.timetuple())\n-\n     def test_post_empty_json_adds_exception_to_response_content_in_debug(self):\n         app = flask.Flask(__name__)\n         app.config['DEBUG'] = True\n@@ -103,8 +85,41 @@ def index():\n                      content_type='application/json; charset=iso-8859-15')\n         assert resp.data == u'H\u00e4llo W\u00f6rld'.encode('utf-8')\n \n-    def test_jsonify(self):\n-        d = dict(a=23, b=42, c=[1, 2, 3])\n+    def test_json_as_unicode(self):\n+        app = flask.Flask(__name__)\n+\n+        app.config['JSON_AS_ASCII'] = True\n+        with app.app_context():\n+            rv = flask.json.dumps(u'\\N{SNOWMAN}')\n+            assert rv == '\"\\\\u2603\"'\n+\n+        app.config['JSON_AS_ASCII'] = False\n+        with app.app_context():\n+            rv = flask.json.dumps(u'\\N{SNOWMAN}')\n+            assert rv == u'\"\\u2603\"'\n+\n+    def test_jsonify_basic_types(self):\n+        \"\"\"Test jsonify with basic types.\"\"\"\n+        # Should be able to use pytest parametrize on this, but I couldn't\n+        # figure out the correct syntax\n+        # https://pytest.org/latest/parametrize.html#pytest-mark-parametrize-parametrizing-test-functions\n+        test_data = (0, 1, 23, 3.14, 's', \"longer string\", True, False,)\n+        app = flask.Flask(__name__)\n+        c = app.test_client()\n+        for i, d in enumerate(test_data):\n+            url = '/jsonify_basic_types{0}'.format(i)\n+            app.add_url_rule(url, str(i), lambda x=d: flask.jsonify(x))\n+            rv = c.get(url)\n+            assert rv.mimetype == 'application/json'\n+            assert flask.json.loads(rv.data) == d\n+\n+    def test_jsonify_dicts(self):\n+        \"\"\"Test jsonify with dicts and kwargs unpacking.\"\"\"\n+        d = dict(\n+            a=0, b=23, c=3.14, d='t', e='Hi', f=True, g=False,\n+            h=['test list', 10, False],\n+            i={'test':'dict'}\n+        )\n         app = flask.Flask(__name__)\n         @app.route('/kw')\n         def return_kwargs():\n@@ -118,18 +133,43 @@ def return_dict():\n             assert rv.mimetype == 'application/json'\n             assert flask.json.loads(rv.data) == d\n \n-    def test_json_as_unicode(self):\n+    def test_jsonify_arrays(self):\n+        \"\"\"Test jsonify of lists and args unpacking.\"\"\"\n+        l = [\n+            0, 42, 3.14, 't', 'hello', True, False,\n+            ['test list', 2, False],\n+            {'test':'dict'}\n+        ]\n         app = flask.Flask(__name__)\n+        @app.route('/args_unpack')\n+        def return_args_unpack():\n+            return flask.jsonify(*l)\n+        @app.route('/array')\n+        def return_array():\n+            return flask.jsonify(l)\n+        c = app.test_client()\n+        for url in '/args_unpack', '/array':\n+            rv = c.get(url)\n+            assert rv.mimetype == 'application/json'\n+            assert flask.json.loads(rv.data) == l\n \n-        app.config['JSON_AS_ASCII'] = True\n-        with app.app_context():\n-            rv = flask.json.dumps(u'\\N{SNOWMAN}')\n-            assert rv == '\"\\\\u2603\"'\n+    def test_jsonify_date_types(self):\n+        \"\"\"Test jsonify with datetime.date and datetime.datetime types.\"\"\"\n \n-        app.config['JSON_AS_ASCII'] = False\n-        with app.app_context():\n-            rv = flask.json.dumps(u'\\N{SNOWMAN}')\n-            assert rv == u'\"\\u2603\"'\n+        test_dates = (\n+            datetime.datetime(1973, 3, 11, 6, 30, 45),\n+            datetime.date(1975, 1, 5)\n+        )\n+\n+        app = flask.Flask(__name__)\n+        c = app.test_client()\n+\n+        for i, d in enumerate(test_dates):\n+            url = '/datetest{0}'.format(i)\n+            app.add_url_rule(url, str(i), lambda val=d: flask.jsonify(x=val))\n+            rv = c.get(url)\n+            assert rv.mimetype == 'application/json'\n+            assert flask.json.loads(rv.data)['x'] == http_date(d.timetuple())\n \n     def test_json_attr(self):\n         app = flask.Flask(__name__)\n",
+    "human_comments": [
+      {
+        "id": 48600047,
+        "file_path": "flask/json.py",
+        "line": null,
+        "user": "ThiefMaster",
+        "body": "A bare `except:` is almost never appropriate - here it isn't for sure! (it also catches things like `SystemExit` or `KeyboardInterrupt`)\n"
+      },
+      {
+        "id": 48600132,
+        "file_path": "flask/json.py",
+        "line": null,
+        "user": "jeffwidman",
+        "body": "Good call. Fixed. \n"
+      },
+      {
+        "id": 48702251,
+        "file_path": "flask/json.py",
+        "line": null,
+        "user": "davidism",
+        "body": "This should use a [`versionchanged`](http://sphinx-doc.org/markup/para.html#directive-versionadded) block.\n"
+      },
+      {
+        "id": 50705837,
+        "file_path": "flask/json.py",
+        "line": 263,
+        "user": "ThiefMaster",
+        "body": "PEP8 issue, there should be two spaces before `#` (and IMO we should add pytest-pep8 to travis to discover stuff like this before merging ;))\n"
+      },
+      {
+        "id": 50705953,
+        "file_path": "flask/json.py",
+        "line": 268,
+        "user": "ThiefMaster",
+        "body": "isn't that a bit pointless? `kwargs` is always a dict\n"
+      },
+      {
+        "id": 50709808,
+        "file_path": "flask/json.py",
+        "line": 268,
+        "user": "davidism",
+        "body": "And `args` is always a list.  Yeah, I'll clean that up.\n"
+      },
+      {
+        "id": 50734409,
+        "file_path": "flask/json.py",
+        "line": 268,
+        "user": "jeffwidman",
+        "body": "Oh yeah. Good catch @ThiefMaster \n"
+      },
+      {
+        "id": 50735060,
+        "file_path": "flask/json.py",
+        "line": 263,
+        "user": "jeffwidman",
+        "body": "Oh, I didn't know that. I've been meaning to setup a pep8 checker on my local workflow, just haven't gotten to it.\n"
+      },
+      {
+        "id": 50736552,
+        "file_path": "flask/json.py",
+        "line": 217,
+        "user": "jeffwidman",
+        "body": "I'm not sure why, but sphinx is not treating bullet points 2, 3, and 4 as list items. See the problem here: http://flask.pocoo.org/docs/dev/api/#flask.json.jsonify\n"
+      },
+      {
+        "id": 50737091,
+        "file_path": "flask/json.py",
+        "line": 240,
+        "user": "jeffwidman",
+        "body": "For some reason Sphinx isn't hyperlinking `json_security` on the generated docs. I'm not sure why. See the problem here: http://flask.pocoo.org/docs/dev/api/#flask.json.jsonify\n"
+      },
+      {
+        "id": 50739539,
+        "file_path": "flask/json.py",
+        "line": 268,
+        "user": "ThiefMaster",
+        "body": "args is actually a tuple \n"
+      },
+      {
+        "id": 50739590,
+        "file_path": "flask/json.py",
+        "line": 217,
+        "user": "wlhlm",
+        "body": "I think you have to line up the beginning of the lines for each point (eg `Multiple` and `:func:` have to be in the same vertical column).\n\nhttp://docutils.sourceforge.net/docs/user/rst/quickref.html#enumerated-lists\n"
+      },
+      {
+        "id": 50771461,
+        "file_path": "flask/json.py",
+        "line": 217,
+        "user": "jeffwidman",
+        "body": "Thanks, fixed in #1703 \n"
+      },
+      {
+        "id": 50771507,
+        "file_path": "flask/json.py",
+        "line": 268,
+        "user": "jeffwidman",
+        "body": "Fixed in #1703\n"
+      },
+      {
+        "id": 50771523,
+        "file_path": "flask/json.py",
+        "line": 263,
+        "user": "jeffwidman",
+        "body": "Fixed in #1703\n"
+      },
+      {
+        "id": 50779074,
+        "file_path": "flask/json.py",
+        "line": 240,
+        "user": "ivan-leontiev",
+        "body": "Should be `:ref:`json-security`` instead.\n"
+      },
+      {
+        "id": 50779545,
+        "file_path": "flask/json.py",
+        "line": 240,
+        "user": "jeffwidman",
+        "body": "Many thanks! Just pushed a fix to #1703 https://github.com/mitsuhiko/flask/pull/1703/files#diff-dc6f589d1b53806b6a6287c182b461b2R240\n"
+      },
+      {
+        "id": 50780485,
+        "file_path": "CHANGES",
+        "line": 13,
+        "user": "ivan-leontiev",
+        "body": "The same here (`json-security`)\n"
+      },
+      {
+        "id": 50781396,
+        "file_path": "CHANGES",
+        "line": 13,
+        "user": "jeffwidman",
+        "body": "Good catch. I just added the fix to #1703.\n"
+      }
+    ]
+  },
+  {
+    "pr_number": 1777,
+    "pr_url": "https://github.com/pallets/flask/pull/1777",
+    "title": "The comment didn't make any sense",
+    "commit_sha": "37b13f515390ceb6f7f03f46e1065a950944b370",
+    "changed_files_count": 1,
+    "diff": "diff --git a/flask/views.py b/flask/views.py\nindex 9bd6b615d5..6e24918063 100644\n--- a/flask/views.py\n+++ b/flask/views.py\n@@ -48,7 +48,7 @@ def dispatch_request(self):\n     generated view function!\n     \"\"\"\n \n-    #: A for which methods this pluggable view can handle.\n+    #: A list of methods this view can handle.\n     methods = None\n \n     #: The canonical way to decorate class-based views is to decorate the\n",
+    "human_comments": [
+      {
+        "id": 59045533,
+        "file_path": "flask/views.py",
+        "line": null,
+        "user": "ThiefMaster",
+        "body": "-which (\"A list of methods this view can handle\" sounds less strange than \"A list of which methods..\")\n"
+      }
+    ]
+  },
+  {
+    "pr_number": 1360,
+    "pr_url": "https://github.com/pallets/flask/pull/1360",
+    "title": "Add exception details to response",
+    "commit_sha": "7b080355f561333e4eea01f656f0e4b32dcc688c",
+    "changed_files_count": 2,
+    "diff": "diff --git a/flask/wrappers.py b/flask/wrappers.py\nindex abcf90f8b1..de5b21a121 100644\n--- a/flask/wrappers.py\n+++ b/flask/wrappers.py\n@@ -15,7 +15,6 @@\n from . import json\n from .globals import _request_ctx_stack\n \n-\n _missing = object()\n \n \n@@ -175,6 +174,9 @@ def on_json_loading_failed(self, e):\n \n         .. versionadded:: 0.8\n         \"\"\"\n+        ctx = _request_ctx_stack.top\n+        if ctx is not None and ctx.app.config.get('DEBUG', False):\n+            raise BadRequest('Failed to decode JSON object: {0}'.format(e))\n         raise BadRequest()\n \n     def _load_form_data(self):\ndiff --git a/tests/test_helpers.py b/tests/test_helpers.py\nindex 7b5b32f203..8d09327f78 100644\n--- a/tests/test_helpers.py\n+++ b/tests/test_helpers.py\n@@ -49,6 +49,30 @@ def test_jsonify_date_types(self):\n             assert rv.mimetype == 'application/json'\n             assert flask.json.loads(rv.data)['x'] == http_date(d.timetuple())\n \n+    def test_post_empty_json_adds_exception_to_response_content_in_debug(self):\n+        app = flask.Flask(__name__)\n+        app.config['DEBUG'] = True\n+        @app.route('/json', methods=['POST'])\n+        def post_json():\n+            flask.request.get_json()\n+            return None\n+        c = app.test_client()\n+        rv = c.post('/json', data=None, content_type='application/json')\n+        assert rv.status_code == 400\n+        assert b'Failed to decode JSON object' in rv.data\n+\n+    def test_post_empty_json_wont_add_exception_to_response_if_no_debug(self):\n+        app = flask.Flask(__name__)\n+        app.config['DEBUG'] = False\n+        @app.route('/json', methods=['POST'])\n+        def post_json():\n+            flask.request.get_json()\n+            return None\n+        c = app.test_client()\n+        rv = c.post('/json', data=None, content_type='application/json')\n+        assert rv.status_code == 400\n+        assert b'Failed to decode JSON object' not in rv.data\n+\n     def test_json_bad_requests(self):\n         app = flask.Flask(__name__)\n         @app.route('/json', methods=['POST'])\n",
+    "human_comments": [
+      {
+        "id": 25795675,
+        "file_path": "flask/wrappers.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "DEBUG is technically around all the time but I feel that we shouldn't fail if the user has somehow managed to corrupt their config => use `config.get('DEBUG', False)`.\n"
+      },
+      {
+        "id": 25795695,
+        "file_path": "flask/wrappers.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "Also, what if current_app is not around?\n"
+      },
+      {
+        "id": 25795951,
+        "file_path": "flask/wrappers.py",
+        "line": null,
+        "user": "ThiefMaster",
+        "body": "How would you ever end up loading json from a `Request` outside an app context?\n\nAny i'd use `current_app.debug` instead of going through the config.\n"
+      },
+      {
+        "id": 25796063,
+        "file_path": "flask/wrappers.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "I mean that some user might e.g. want to use Flask's extended request objects without the rest of Flask... take a look at `max_content_length` where similar precautions are made.\n"
+      },
+      {
+        "id": 25809288,
+        "file_path": "tests/test_helpers.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "You need a `b'...'` string here.\n"
+      },
+      {
+        "id": 25809302,
+        "file_path": "tests/test_helpers.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "Typo in function name.\n"
+      },
+      {
+        "id": 25809305,
+        "file_path": "tests/test_helpers.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "Typo in function name.\n"
+      },
+      {
+        "id": 25887347,
+        "file_path": "flask/wrappers.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "Use `and` instead of two nested ifs.\n"
+      },
+      {
+        "id": 25887373,
+        "file_path": "flask/wrappers.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "Unused import.\n"
+      }
+    ]
+  },
+  {
+    "pr_number": 1342,
+    "pr_url": "https://github.com/pallets/flask/pull/1342",
+    "title": "flask.ext Import Migration Tool #1135",
+    "commit_sha": "6fa1889afb62fb01e8413584aa7abc293245fcfc",
+    "changed_files_count": 3,
+    "diff": "diff --git a/scripts/flaskext_migrate.py b/scripts/flaskext_migrate.py\nnew file mode 100644\nindex 0000000000..e24ab95cf9\n--- /dev/null\n+++ b/scripts/flaskext_migrate.py\n@@ -0,0 +1,160 @@\n+# Script which modifies source code away from the deprecated \"flask.ext\"\n+# format.\n+#\n+# Run in the terminal by typing: `python flaskext_migrate.py <source_file.py>`\n+#\n+# Author: Keyan Pishdadian 2015\n+\n+from redbaron import RedBaron\n+import sys\n+\n+\n+def read_source(input_file):\n+    \"\"\"Parses the input_file into a RedBaron FST.\"\"\"\n+    with open(input_file, \"r\") as source_code:\n+        red = RedBaron(source_code.read())\n+    return red\n+\n+\n+def write_source(red, input_file):\n+    \"\"\"Overwrites the input_file once the FST has been modified.\"\"\"\n+    with open(input_file, \"w\") as source_code:\n+        source_code.write(red.dumps())\n+\n+\n+def fix_imports(red):\n+    \"\"\"Wrapper which fixes \"from\" style imports and then \"import\" style.\"\"\"\n+    red = fix_standard_imports(red)\n+    red = fix_from_imports(red)\n+    return red\n+\n+\n+def fix_from_imports(red):\n+    \"\"\"\n+    Converts \"from\" style imports to not use \"flask.ext\".\n+\n+    Handles:\n+    Case 1: from flask.ext.foo import bam --> from flask_foo import bam\n+    Case 2: from flask.ext import foo --> import flask_foo as foo\n+    \"\"\"\n+    from_imports = red.find_all(\"FromImport\")\n+    for x, node in enumerate(from_imports):\n+        values = node.value\n+        if (values[0].value == 'flask') and (values[1].value == 'ext'):\n+            # Case 1\n+            if len(node.value) == 3:\n+                package = values[2].value\n+                modules = node.modules()\n+                module_string = _get_modules(modules)\n+                if len(modules) > 1:\n+                    node.replace(\"from flask_%s import %s\"\n+                                 % (package, module_string))\n+                else:\n+                    name = node.names()[0]\n+                    node.replace(\"from flask_%s import %s as %s\"\n+                                 % (package, module_string, name))\n+            # Case 2\n+            else:\n+                module = node.modules()[0]\n+                node.replace(\"import flask_%s as %s\"\n+                             % (module, module))\n+    return red\n+\n+\n+def fix_standard_imports(red):\n+    \"\"\"\n+    Handles import modification in the form:\n+    import flask.ext.foo\" --> import flask_foo\n+    \"\"\"\n+    imports = red.find_all(\"ImportNode\")\n+    for x, node in enumerate(imports):\n+        try:\n+            if (node.value[0].value[0].value == 'flask' and\n+               node.value[0].value[1].value == 'ext'):\n+                package = node.value[0].value[2].value\n+                name = node.names()[0].split('.')[-1]\n+                if name == package:\n+                    node.replace(\"import flask_%s\" % (package))\n+                else:\n+                    node.replace(\"import flask_%s as %s\" % (package, name))\n+        except IndexError:\n+            pass\n+\n+    return red\n+\n+\n+def _get_modules(module):\n+    \"\"\"\n+    Takes a list of modules and converts into a string.\n+\n+    The module list can include parens, this function checks each element in\n+    the list, if there is a paren then it does not add a comma before the next\n+    element. Otherwise a comma and space is added. This is to preserve module\n+    imports which are multi-line and/or occur within parens. While also not\n+    affecting imports which are not enclosed.\n+    \"\"\"\n+    modules_string = [cur + ', ' if cur.isalnum() and next.isalnum()\n+                      else cur\n+                      for (cur, next) in zip(module, module[1:]+[''])]\n+\n+    return ''.join(modules_string)\n+\n+\n+def fix_function_calls(red):\n+    \"\"\"\n+    Modifies function calls in the source to reflect import changes.\n+\n+    Searches the AST for AtomtrailerNodes and replaces them.\n+    \"\"\"\n+    atoms = red.find_all(\"Atomtrailers\")\n+    for x, node in enumerate(atoms):\n+        try:\n+            if (node.value[0].value == 'flask' and\n+               node.value[1].value == 'ext'):\n+                params = _form_function_call(node)\n+                node.replace(\"flask_%s%s\" % (node.value[2], params))\n+        except IndexError:\n+            pass\n+\n+    return red\n+\n+\n+def _form_function_call(node):\n+    \"\"\"\n+    Reconstructs function call strings when making attribute access calls.\n+    \"\"\"\n+    node_vals = node.value\n+    output = \".\"\n+    for x, param in enumerate(node_vals[3::]):\n+        if param.dumps()[0] == \"(\":\n+            output = output[0:-1] + param.dumps()\n+            return output\n+        else:\n+            output += param.dumps() + \".\"\n+\n+\n+def check_user_input():\n+    \"\"\"Exits and gives error message if no argument is passed in the shell.\"\"\"\n+    if len(sys.argv) < 2:\n+        sys.exit(\"No filename was included, please try again.\")\n+\n+\n+def fix_tester(ast):\n+    \"\"\"Wrapper which allows for testing when not running from shell.\"\"\"\n+    ast = fix_imports(ast)\n+    ast = fix_function_calls(ast)\n+    return ast.dumps()\n+\n+\n+def fix():\n+    \"\"\"Wrapper for user argument checking and import fixing.\"\"\"\n+    check_user_input()\n+    input_file = sys.argv[1]\n+    ast = read_source(input_file)\n+    ast = fix_imports(ast)\n+    ast = fix_function_calls(ast)\n+    write_source(ast, input_file)\n+\n+\n+if __name__ == \"__main__\":\n+    fix()\ndiff --git a/scripts/test_import_migration.py b/scripts/test_import_migration.py\nnew file mode 100644\nindex 0000000000..0220e70a03\n--- /dev/null\n+++ b/scripts/test_import_migration.py\n@@ -0,0 +1,71 @@\n+# Tester for the flaskext_migrate.py module located in flask/scripts/\n+#\n+# Author: Keyan Pishdadian\n+import pytest\n+from redbaron import RedBaron\n+import flaskext_migrate as migrate\n+\n+\n+def test_simple_from_import():\n+    red = RedBaron(\"from flask.ext import foo\")\n+    output = migrate.fix_tester(red)\n+    assert output == \"import flask_foo as foo\"\n+\n+\n+def test_from_to_from_import():\n+    red = RedBaron(\"from flask.ext.foo import bar\")\n+    output = migrate.fix_tester(red)\n+    assert output == \"from flask_foo import bar as bar\"\n+\n+\n+def test_multiple_import():\n+    red = RedBaron(\"from flask.ext.foo import bar, foobar, something\")\n+    output = migrate.fix_tester(red)\n+    assert output == \"from flask_foo import bar, foobar, something\"\n+\n+\n+def test_multiline_import():\n+    red = RedBaron(\"from flask.ext.foo import \\\n+                    bar,\\\n+                    foobar,\\\n+                    something\")\n+    output = migrate.fix_tester(red)\n+    assert output == \"from flask_foo import bar, foobar, something\"\n+\n+\n+def test_module_import():\n+    red = RedBaron(\"import flask.ext.foo\")\n+    output = migrate.fix_tester(red)\n+    assert output == \"import flask_foo\"\n+\n+\n+def test_named_module_import():\n+    red = RedBaron(\"import flask.ext.foo as foobar\")\n+    output = migrate.fix_tester(red)\n+    assert output == \"import flask_foo as foobar\"\n+\n+\n+def test__named_from_import():\n+    red = RedBaron(\"from flask.ext.foo import bar as baz\")\n+    output = migrate.fix_tester(red)\n+    assert output == \"from flask_foo import bar as baz\"\n+\n+\n+def test_parens_import():\n+    red = RedBaron(\"from flask.ext.foo import (bar, foo, foobar)\")\n+    output = migrate.fix_tester(red)\n+    assert output == \"from flask_foo import (bar, foo, foobar)\"\n+\n+\n+def test_function_call_migration():\n+    red = RedBaron(\"flask.ext.foo(var)\")\n+    output = migrate.fix_tester(red)\n+    assert output == \"flask_foo(var)\"\n+\n+\n+def test_nested_function_call_migration():\n+    red = RedBaron(\"import flask.ext.foo\\n\\n\"\n+                   \"flask.ext.foo.bar(var)\")\n+    output = migrate.fix_tester(red)\n+    assert output == (\"import flask_foo\\n\\n\"\n+                      \"flask_foo.bar(var)\")\ndiff --git a/tox.ini b/tox.ini\nindex ba2d2668ed..3e170d872c 100644\n--- a/tox.ini\n+++ b/tox.ini\n@@ -8,6 +8,7 @@ commands =\n deps=\n     pytest\n     greenlet\n+    redbaron\n \n     lowest: Werkzeug==0.7\n     lowest: Jinja2==2.4\n",
+    "human_comments": [
+      {
+        "id": 24531160,
+        "file_path": "scripts/flaskext_migrate.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "You can use `enumerate` here.\n"
+      },
+      {
+        "id": 24696158,
+        "file_path": "scripts/flaskext_migrate.py",
+        "line": null,
+        "user": "untitaker",
+        "body": "I think that's a leftover, \"foo\" is not supposed to be hardcoded. :)\n"
+      },
+      {
+        "id": 24696252,
+        "file_path": "scripts/test_import_migration.py",
+        "line": 63,
+        "user": "untitaker",
+        "body": "This works, but this doesn't:\n\n```\ndef test_function_call_migration():\n    red = RedBaron(\"import flask.ext.foo\\n\\n\"\n                   \"flask.ext.foo.bar(var)\")\n    output = migrate.fix_tester(red)\n    assert output == (\"import flask_foo\\n\\n\"\n                      \"flask_foo.bar(var)\")\n```\n"
+      },
+      {
+        "id": 24696555,
+        "file_path": "scripts/flaskext_migrate.py",
+        "line": null,
+        "user": "keyan",
+        "body": "Woops, good catch. Fixed that.\n"
+      },
+      {
+        "id": 24696792,
+        "file_path": "scripts/test_import_migration.py",
+        "line": 63,
+        "user": "keyan",
+        "body": "Okay, there are a few problems with this. Let me work on it. Thanks for looking it over.\n"
       }
     ]
   }

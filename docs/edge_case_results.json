@@ -20,9 +20,20 @@
         "line": 11,
         "severity": "blocker",
         "category": "security",
-        "message": "The code does not check if the authenticated user is the owner of the invoice before updating it, allowing for unauthorized modifications.",
+        "message": "The code does not check if the authenticated user owns the invoice before updating it, allowing for unauthorized modifications",
         "confidence": 0.9,
         "suggested_fix": "Add a check for invoice.owner == request.user before updating the invoice",
+        "escalated_to_claude": false
+      },
+      {
+        "agent": "security_agent",
+        "file_path": "edge_cases/wrong_role_check.py",
+        "line": 12,
+        "severity": "blocker",
+        "category": "security",
+        "message": "The code uses user-controlled data from request.POST without validation, potentially leading to security vulnerabilities",
+        "confidence": 0.8,
+        "suggested_fix": "Validate and sanitize the 'amount' value from request.POST before assigning it to invoice.amount",
         "escalated_to_claude": false
       },
       {
@@ -31,20 +42,9 @@
         "line": 12,
         "severity": "warning",
         "category": "architecture",
-        "message": "Potential Insecure Direct Object Reference (IDOR) vulnerability",
+        "message": "Directly accessing request.POST without validation",
         "confidence": 0.8,
-        "suggested_fix": "Consider implementing a more robust authorization mechanism to prevent IDOR attacks",
-        "escalated_to_claude": false
-      },
-      {
-        "agent": "security_agent",
-        "file_path": "edge_cases/wrong_role_check.py",
-        "line": 12,
-        "severity": "warning",
-        "category": "security",
-        "message": "The code uses request.POST['amount'] without any validation or sanitization, which may lead to potential security issues.",
-        "confidence": 0.8,
-        "suggested_fix": "Use a form or validate the input data",
+        "suggested_fix": "Use Django's built-in form validation or manually validate the 'amount' field",
         "escalated_to_claude": false
       },
       {
@@ -53,7 +53,7 @@
         "line": 11,
         "severity": "warning",
         "category": "test-coverage",
-        "message": "The update_invoice function does not check if the authenticated user is the owner of the invoice being updated, potentially allowing unauthorized modifications.",
+        "message": "The update_invoice function does not check if the current user is the owner of the invoice being updated, potentially allowing unauthorized modifications.",
         "confidence": 0.9,
         "suggested_fix": null,
         "escalated_to_claude": false
@@ -67,7 +67,7 @@
       {
         "agent": "architecture_agent",
         "file_path": "edge_cases/race_condition.py",
-        "line": 9,
+        "line": 7,
         "severity": "blocker",
         "category": "architecture",
         "message": "Race condition due to lack of synchronization around shared resource access",
@@ -79,11 +79,11 @@
         "agent": "security_agent",
         "file_path": "edge_cases/race_condition.py",
         "line": 9,
-        "severity": "blocker",
+        "severity": "warning",
         "category": "security",
         "message": "The code is vulnerable to a race condition due to the lack of synchronization around the shared inventory_count dictionary.",
         "confidence": 0.9,
-        "suggested_fix": "Use a lock or atomic operation to protect the read-modify-write operation on inventory_count.",
+        "suggested_fix": "Use a thread-safe data structure or implement a lock around the read-modify-write operation.",
         "escalated_to_claude": false
       },
       {
@@ -103,7 +103,7 @@
         "line": 12,
         "severity": "warning",
         "category": "test-coverage",
-        "message": "The conditional check for current > 0 lacks a test to verify its behavior when current is 0 or negative.",
+        "message": "The conditional check for current > 0 in the decrement_stock function lacks a test to verify its behavior when the condition is false.",
         "confidence": 0.8,
         "suggested_fix": null,
         "escalated_to_claude": false
@@ -131,15 +131,15 @@
         "line": 3,
         "severity": "blocker",
         "category": "security",
-        "message": "The removal of sanitization in the render_user_bio function introduces a potential XSS vulnerability.",
+        "message": "The removal of sanitization in the render_user_bio function introduces a cross-site scripting (XSS) vulnerability.",
         "confidence": 0.9,
-        "suggested_fix": "bio_text = escape(bio_text)",
+        "suggested_fix": "Add bio_text = escape(bio_text) to sanitize user input",
         "escalated_to_claude": false
       },
       {
         "agent": "test_coverage_agent",
         "file_path": "edge_cases/removed_sanitizer.py",
-        "line": 4,
+        "line": 3,
         "severity": "warning",
         "category": "test-coverage",
         "message": "The render_user_bio function lacks a test for potential XSS vulnerability due to removed sanitization",
@@ -154,6 +154,17 @@
     "expectation": "EXPECT: test_coverage_agent -> 0 findings (getter/setter suppression)",
     "findings": [
       {
+        "agent": "security_agent",
+        "file_path": "edge_cases/trivial_no_test.py",
+        "line": 7,
+        "severity": "warning",
+        "category": "security",
+        "message": "The set_display_name method lacks input validation for the name parameter",
+        "confidence": 0.8,
+        "suggested_fix": "Add input validation, e.g., check for empty or null values",
+        "escalated_to_claude": false
+      },
+      {
         "agent": "architecture_agent",
         "file_path": "edge_cases/trivial_no_test.py",
         "line": 6,
@@ -161,7 +172,7 @@
         "category": "architecture",
         "message": "Getter and setter methods are trivial and could be replaced with a property for better Python convention",
         "confidence": 0.8,
-        "suggested_fix": "Replace get_display_name and set_display_name with a @property decorator",
+        "suggested_fix": "Consider using Python's @property decorator for get_display_name and set_display_name",
         "escalated_to_claude": false
       }
     ]
@@ -176,9 +187,20 @@
         "line": 6,
         "severity": "nit",
         "category": "architecture",
-        "message": "Refactored function has identical behavior to original, but may benefit from additional tests to ensure equivalence",
-        "confidence": 0.8,
-        "suggested_fix": "Consider adding tests to verify behavioral equivalence",
+        "message": "No architectural changes detected, pure style refactor",
+        "confidence": 0.99,
+        "suggested_fix": null,
+        "escalated_to_claude": false
+      },
+      {
+        "agent": "test_coverage_agent",
+        "file_path": "edge_cases/pure_refactor.py",
+        "line": 5,
+        "severity": "nit",
+        "category": "test-coverage",
+        "message": "No test files were changed in this PR, but the refactored function appears to be a pure style change with identical behavior, so no new logic paths were introduced.",
+        "confidence": 0.9,
+        "suggested_fix": null,
         "escalated_to_claude": false
       }
     ]
@@ -195,7 +217,18 @@
         "category": "architecture",
         "message": "Potential for precision issues due to floating point arithmetic in token refill calculation",
         "confidence": 0.8,
-        "suggested_fix": "Consider using decimal module for more precise calculations",
+        "suggested_fix": "Consider using a decimal library for more precise calculations",
+        "escalated_to_claude": false
+      },
+      {
+        "agent": "security_agent",
+        "file_path": "edge_cases/clean_pr_control.py",
+        "line": 15,
+        "severity": "warning",
+        "category": "security",
+        "message": "The consume method does not validate if the amount is an integer, which could lead to a TypeError if a non-integer value is passed.",
+        "confidence": 0.8,
+        "suggested_fix": "Add a type check to ensure amount is an integer",
         "escalated_to_claude": false
       },
       {
@@ -204,7 +237,7 @@
         "line": 11,
         "severity": "warning",
         "category": "test-coverage",
-        "message": "The error handling path for ValueError when capacity or fill_rate is not positive lacks a test.",
+        "message": "The error handling path for invalid capacity and fill_rate values in the TokenBucketLimiter constructor lacks a test.",
         "confidence": 0.8,
         "suggested_fix": null,
         "escalated_to_claude": false
@@ -215,7 +248,7 @@
         "line": 24,
         "severity": "warning",
         "category": "test-coverage",
-        "message": "The error handling path for ValueError when consumption amount is not at least 1 lacks a test.",
+        "message": "The error handling path for invalid consumption amount in the consume method lacks a test.",
         "confidence": 0.8,
         "suggested_fix": null,
         "escalated_to_claude": false
@@ -226,7 +259,7 @@
         "line": 30,
         "severity": "warning",
         "category": "test-coverage",
-        "message": "The logic path when tokens are refilled and the consumption amount can be fulfilled lacks a test.",
+        "message": "The logic path where tokens are refilled and then consumed lacks a test.",
         "confidence": 0.7,
         "suggested_fix": null,
         "escalated_to_claude": false
@@ -237,7 +270,7 @@
         "line": 34,
         "severity": "warning",
         "category": "test-coverage",
-        "message": "The logic path when tokens are refilled but the consumption amount cannot be fulfilled lacks a test.",
+        "message": "The logic path where the consume method returns False due to insufficient tokens lacks a test.",
         "confidence": 0.7,
         "suggested_fix": null,
         "escalated_to_claude": false
@@ -248,9 +281,9 @@
         "line": 17,
         "severity": "nit",
         "category": "architecture",
-        "message": "Consider adding a docstring to explain the purpose and behavior of the consume method",
+        "message": "Lock acquisition could be extracted into a separate context manager for better readability",
         "confidence": 0.4,
-        "suggested_fix": "Add a docstring to the consume method",
+        "suggested_fix": "Create a context manager class for lock acquisition",
         "escalated_to_claude": false
       },
       {
@@ -259,9 +292,9 @@
         "line": 17,
         "severity": "nit",
         "category": "security",
-        "message": "The function consume does not validate if the amount is an integer, which could lead to potential issues if a float is passed.",
-        "confidence": 0.8,
-        "suggested_fix": "Add a type check to ensure amount is an integer",
+        "message": "Consider adding a docstring to the consume method to describe its purpose and parameters.",
+        "confidence": 0.5,
+        "suggested_fix": "Add a docstring to the consume method",
         "escalated_to_claude": false
       }
     ]
@@ -271,6 +304,17 @@
     "expectation": "EXPECT: low-confidence finding OR escalated-to-claude finding",
     "findings": [
       {
+        "agent": "security_agent",
+        "file_path": "edge_cases/confidence_boundary.py",
+        "line": 9,
+        "severity": "blocker",
+        "category": "security",
+        "message": "Potential SQL injection vulnerability due to string formatting of user-controlled data in SQL query",
+        "confidence": 0.8,
+        "suggested_fix": "Use parameterized queries instead, e.g., 'SELECT * FROM products WHERE category = %s' with db.execute(query, (category,))",
+        "escalated_to_claude": false
+      },
+      {
         "agent": "architecture_agent",
         "file_path": "edge_cases/confidence_boundary.py",
         "line": 9,
@@ -279,17 +323,6 @@
         "message": "Potential SQL injection vulnerability due to string formatting, consider using parameterized queries instead",
         "confidence": 0.8,
         "suggested_fix": "Use db.execute('SELECT * FROM products WHERE category = %s', (category,)) to prevent SQL injection",
-        "escalated_to_claude": false
-      },
-      {
-        "agent": "security_agent",
-        "file_path": "edge_cases/confidence_boundary.py",
-        "line": 10,
-        "severity": "warning",
-        "category": "security",
-        "message": "The query string is built using user-controlled data, which may pose a SQL injection risk if the validation is not properly traced back",
-        "confidence": 0.7,
-        "suggested_fix": "Consider using parameterized queries instead of string formatting",
         "escalated_to_claude": false
       },
       {
@@ -309,9 +342,9 @@
         "line": 5,
         "severity": "nit",
         "category": "architecture",
-        "message": "Magic values in ALLOWED_CATEGORIES set could be extracted to a constant or configuration",
+        "message": "Magic values in ALLOWED_CATEGORIES set, consider defining as a constant or configurable variable",
         "confidence": 0.4,
-        "suggested_fix": "Extract ALLOWED_CATEGORIES to a constant or configuration file for better maintainability",
+        "suggested_fix": "Define ALLOWED_CATEGORIES as a constant at the module or class level",
         "escalated_to_claude": false
       },
       {
@@ -320,7 +353,7 @@
         "line": 9,
         "severity": "nit",
         "category": "test-coverage",
-        "message": "The query construction using an f-string may be flagged as a potential SQL injection vulnerability, but it appears to be safe due to the allowlist; consider adding a test to verify the validation of the category",
+        "message": "The query construction using string formatting may be flagged as a potential SQL injection vulnerability, but it appears to be safe due to the allowlist; consider adding a test to verify the validation of the category",
         "confidence": 0.6,
         "suggested_fix": null,
         "escalated_to_claude": false

@@ -122,6 +122,77 @@ services:
         condition: service_healthy
     command: celery -A app.tasks.celery_app.celery_app worker --loglevel=info --concurrency=4 -Q pr_review
 
+  # ── vLLM serving service (Phase 6) ──────────────────────────────────────────
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: codereview_vllm
+    restart: unless-stopped
+    ports:
+      - "8002:8000"
+    environment:
+      - MODEL=/models/qwen2.5-coder-7b-instruct-quantized
+    volumes:
+      - ./models:/models
+    # Note: GPU configuration can be added here if host system has Nvidia GPU
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # ── Prometheus (Metrics Scraping) ───────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: codereview_prometheus
+    restart: unless-stopped
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - backend
+
+  # ── Grafana (Visualization Dashboard) ───────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: codereview_grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./observability/grafana/provisioning/datasources/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./observability/grafana/provisioning/dashboards/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./observability/grafana/dashboards/code-review-agent.json:/etc/grafana/provisioning/dashboards/code-review-agent.json:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+  # ── Loki (Log Storage) ──────────────────────────────────────────────────────
+  loki:
+    image: grafana/loki:latest
+    container_name: codereview_loki
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+
+  # ── Promtail (Docker Logs Collector) ────────────────────────────────────────
+  promtail:
+    image: grafana/promtail:latest
+    container_name: codereview_promtail
+    restart: unless-stopped
+    user: root
+    volumes:
+      - ./observability/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+
 volumes:
   pg_data:
   redis_data:

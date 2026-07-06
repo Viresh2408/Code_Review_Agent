@@ -26,7 +26,9 @@ RUN uv pip install --system --no-cache-dir -r pyproject.toml 2>/dev/null || \
         structlog \
         python-dotenv \
         chromadb \
-        redis
+        redis \
+        prometheus-client \
+        prometheus-fastapi-instrumentator
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM python:3.11-slim AS runtime

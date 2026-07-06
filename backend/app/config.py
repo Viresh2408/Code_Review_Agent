@@ -67,6 +67,16 @@ class Settings(BaseSettings):
 
     # ── LLM APIs ──────────────────────────────────────────────────────────────
     anthropic_api_key: str = ""
+    vllm_api_url: str = "http://localhost:8002/v1"
+    vllm_model: str = "qwen2.5-coder-7b-instruct-quantized"
+    # Feature flag: "groq" = Groq primary (Phase 1-5 behaviour, stable default)
+    #               "vllm" = self-hosted fine-tuned model primary
+    # Change this to "vllm" only after evaluate.py gate passes.
+    model_backend: str = "groq"
+    # Amortized GPU cost per token for self-hosted vLLM inference.
+    # Default is a conservative A10G estimate (~$1/M tokens).
+    # Set this to your actual GPU$/hr ÷ tokens/hr for honest cost reporting.
+    vllm_gpu_cost_per_token: float = 0.000001
 
     # ── JWT Security ──────────────────────────────────────────────────────────
     jwt_secret_key: str = "dev-jwt-secret-key-change-in-production"

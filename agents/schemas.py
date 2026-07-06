@@ -67,6 +67,8 @@ class PRContext(BaseModel):
     repo: str = Field(..., description="Full repo name: 'owner/repo'")
     pr_number: int
     commit_sha: str
+    title: str | None = Field(default=None, description="Title of the pull request.")
+    author: str | None = Field(default=None, description="Author of the pull request.")
 
     # ── Payload ───────────────────────────────────────────────────────────────
     changed_files: list[ChangedFile] = Field(default_factory=list)

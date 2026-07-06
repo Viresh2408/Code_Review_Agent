@@ -240,3 +240,46 @@ def test_task_idempotency_is_duplicate():
         assert result["status"] == "skipped_duplicate"
         assert result["repo"] == "owner/repo"
         assert result["pr_number"] == 1
+
+
+def test_process_pr_review_retry_path():
+    """Verify that when an exception occurs, the Celery retry mechanism is triggered in eager mode."""
+    from app.tasks.celery_app import celery_app
+    original_eager = celery_app.conf.task_always_eager
+    celery_app.conf.task_always_eager = True
+
+    mock_session = AsyncMock()
+    mock_repo_res = MagicMock()
+    mock_repo_res.scalar_one_or_none.return_value = MagicMock(id=123)
+
+    mock_pr_res = MagicMock()
+    mock_pr_res.scalar_one_or_none.return_value = None
+
+    mock_session.execute.side_effect = [
+        mock_repo_res,  # check_idempotency Repo query
+        mock_pr_res,    # check_idempotency PR query
+    ]
+
+    with patch("app.tasks.review_job.get_session") as mock_get_session, \
+         patch("app.parser.pipeline.ingest_pr", side_effect=ValueError("Simulated Ingestion Error")), \
+         patch("app.tasks.review_job.update_pr_status", return_value=True), \
+         patch.object(process_pr_review, "retry") as mock_retry:
+
+        mock_get_session.return_value.__aenter__.return_value = mock_session
+
+        # In eager mode, calling apply_async runs the task through Celery's wrapper,
+        # which triggers the decorator's autoretry_for logic when an exception is raised.
+        process_pr_review.apply_async(
+            kwargs={
+                "repo_full_name": "owner/repo",
+                "pr_number": 1,
+                "commit_sha": "sha123456",
+            }
+        )
+
+        mock_retry.assert_called_once()
+        kwargs_called = mock_retry.call_args[1]
+        assert isinstance(kwargs_called.get("exc"), ValueError)
+        assert str(kwargs_called.get("exc")) == "Simulated Ingestion Error"
+
+    celery_app.conf.task_always_eager = original_eager

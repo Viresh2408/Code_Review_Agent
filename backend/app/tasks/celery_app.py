@@ -7,6 +7,10 @@ from __future__ import annotations
 from celery import Celery
 
 from app.config import get_settings
+from app.observability.logging_config import setup_logging
+
+# Initialize unified structured logging config for celery worker
+setup_logging()
 
 settings = get_settings()
 

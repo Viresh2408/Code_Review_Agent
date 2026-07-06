@@ -412,8 +412,11 @@ def test_aggregator_single_execution_staggered():
         # Deduplicate and overwrite using ReplaceFindings
         return {"findings": ReplaceFindings(state.findings)}
 
+    def mock_ingestion(state: PRContext) -> dict:
+        return {}
+
     # Wire up the test workflow identically
-    test_workflow.add_node("ingestion", lambda s: {})
+    test_workflow.add_node("ingestion", mock_ingestion)
     test_workflow.add_node("security", slow_sec_node)
     test_workflow.add_node("architecture", fast_arch_node)
     test_workflow.add_node("test_coverage", slow_cov_node)
@@ -678,4 +681,24 @@ def test_route_agents():
         "architecture_agent_node",
         "test_coverage_agent_node"
     }
+
+
+def test_build_review_graph_wiring():
+    """Verify that build_review_graph compiles a graph containing all 4 agent nodes."""
+    from agents.orchestrator import build_review_graph
+    
+    g = build_review_graph()
+    assert g is not None
+    
+    node_names = set(g.nodes.keys())
+    expected_nodes = {
+        "ingestion_node",
+        "security_agent_node",
+        "architecture_agent_node",
+        "test_coverage_agent_node",
+        "debt_scoring_agent_node",
+        "aggregator_node",
+    }
+    assert expected_nodes.issubset(node_names)
+
 

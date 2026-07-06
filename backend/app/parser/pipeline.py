@@ -157,6 +157,8 @@ def ingest_pr(
         repo_conventions="",
         findings=[],
         debt_score_delta=None,
+        title=pr.title,
+        author=pr.user.login,
     )
 
     logger.info(

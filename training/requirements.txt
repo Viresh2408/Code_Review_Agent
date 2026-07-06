@@ -1,0 +1,16 @@
+# Training pipeline dependencies — separate from backend requirements.
+# Install in a GPU environment (Colab Pro, RunPod, Lambda Labs, etc.)
+# Do not add these to backend/requirements.txt — they are not needed at serving time.
+
+torch>=2.1
+transformers>=4.40
+peft>=0.10
+trl>=0.8
+bitsandbytes>=0.43
+autoawq>=0.2
+mlflow>=2.12
+datasets>=2.18
+sqlalchemy>=2.0
+pydantic-settings>=2.0
+structlog>=23.0
+httpx>=0.25
