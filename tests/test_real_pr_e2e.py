@@ -68,36 +68,10 @@ BASE_BRANCH_FILES = {
             row = cursor.fetchone()
             return {"id": row[0], "name": row[1]} if row else None
     """),
-    "app/auth.py": textwrap.dedent("""\
-        \"\"\"Authentication helpers — safe baseline.\"\"\"
-
-        import hashlib
-        import os
-
-
-        def hash_password(password: str) -> str:
-            salt = os.urandom(16).hex()
-            return hashlib.sha256((salt + password).encode()).hexdigest()
-    """),
+    "app/config.py": "# Config baseline\n",
+    "app/billing.py": "# Billing baseline\n",
     "tests/__init__.py": "",
-    "tests/test_auth.py": textwrap.dedent("""\
-        \"\"\"Tests for auth module.\"\"\"
-
-        from app.auth import hash_password
-
-
-        def test_hash_password_returns_string():
-            result = hash_password("hunter2")
-            assert isinstance(result, str)
-            assert len(result) == 64
-    """),
-    "app/access.py": "# Access control module\n",
-    "app/crypto.py": "# Crypto helper\n",
-    "app/templates.py": "# Template helper\n",
-    "app/design.py": "# Security design\n",
-    "app/deserialization.py": "# Data parsing\n",
-    "app/logging.py": "# Logging helper\n",
-    "app/ssrf.py": "# Image fetching\n",
+    "tests/test_billing.py": "# Test billing baseline\n",
 }
 
 PR_BRANCH_FILES = {
@@ -157,101 +131,6 @@ PR_BRANCH_FILES = {
                 return amount * 0.75
             return amount
     """),
-    "app/access.py": textwrap.dedent("""\
-        \"\"\"Access control module — SECURED version.\"\"\"
-
-        import db
-
-
-        # FIXED: Check user session ownership to prevent IDOR
-        def get_user_profile(user_id: str, current_user_session: str):
-            session_user = db.get_user_from_session(current_user_session)
-            if not session_user or session_user["id"] != user_id:
-                raise PermissionError("Access denied: session user does not match requested user ID")
-            return db.fetch_profile(user_id)
-    """),
-    "app/crypto.py": textwrap.dedent("""\
-        \"\"\"Cryptographic helper — SECURED version.\"\"\"
-
-        import hashlib
-
-
-        # FIXED: Use PBKDF2 with SHA-256 for secure salted password hashing
-        def hash_user_password(password: str) -> str:
-            salt = b"static_salt_for_testing"
-            return hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 100000).hex()
-    """),
-    "app/templates.py": textwrap.dedent("""\
-        \"\"\"Template rendering — SECURED version.\"\"\"
-
-        from flask import render_template_string
-
-
-        # FIXED: Pass user input via template parameters enabling auto-escaping
-        def render_greeting(username: str) -> str:
-            return render_template_string("<h1>Welcome, {{ username }}!</h1>", username=username)
-    """),
-    "app/design.py": textwrap.dedent("""\
-        \"\"\"Security design — SECURED version.\"\"\"
-
-        import secrets
-
-
-        # FIXED: Use cryptographically secure secrets module for generation
-        def generate_password_reset_token() -> str:
-            return secrets.token_hex(16)
-    """),
-    "app/deserialization.py": textwrap.dedent("""\
-        \"\"\"Data parsing — SECURED version.\"\"\"
-
-        import json
-
-
-        # FIXED: Parse untrusted data via safe JSON deserialization
-        def load_session_cookie(cookie_bytes: bytes) -> dict:
-            return json.loads(cookie_bytes.decode("utf-8"))
-    """),
-    "app/logging.py": textwrap.dedent("""\
-        \"\"\"Logging helpers — SECURED version.\"\"\"
-
-        import logging
-        logger = logging.getLogger(__name__)
-
-
-        # FIXED: Sanitize log outputs and capture exception trace logging
-        def process_login(username, password):
-            try:
-                # FIXED: Plaintext passwords are never logged
-                logger.info(f"Processing login attempt for user: {username}")
-                raise ValueError("Authentication error")
-            except Exception as e:
-                # FIXED: Exception stack trace is captured safely
-                logger.exception("Login authentication failed due to processing error")
-    """),
-    "app/ssrf.py": textwrap.dedent("""\
-        \"\"\"Image fetching — SECURED version.\"\"\"
-
-        import requests
-        from urllib.parse import urlparse
-
-
-        # FIXED: Validate scheme and hostname to prevent SSRF
-        def download_avatar(avatar_url: str) -> bytes:
-            parsed = urlparse(avatar_url)
-            if parsed.scheme not in ("http", "https"):
-                raise ValueError("Invalid avatar URL scheme")
-            if parsed.hostname not in ("assets.example.com", "images.example.com"):
-                raise ValueError("Unauthorized avatar hostname destination")
-            return requests.get(avatar_url).content
-    """),
-    "tests/test_database.py": "# Unit tests for database module\n",
-    "tests/test_access.py": "# Unit tests for access control\n",
-    "tests/test_crypto.py": "# Unit tests for crypto helper\n",
-    "tests/test_templates.py": "# Unit tests for template rendering\n",
-    "tests/test_design.py": "# Unit tests for design tokens\n",
-    "tests/test_deserialization.py": "# Unit tests for deserialization\n",
-    "tests/test_logging.py": "# Unit tests for logging safety\n",
-    "tests/test_ssrf.py": "# Unit tests for ssrf prevention\n",
     "tests/test_billing.py": textwrap.dedent("""\
         \"\"\"Unit tests for billing branch coverage.\"\"\"
 
@@ -441,8 +320,8 @@ def run_pipeline_live(pr_context) -> tuple[list, float]:
         import agents.orchestrator as orch
         original_log = orch.log_llm_usage
 
-        def tracking_log(provider, model, prompt_tokens, completion_tokens):
-            cost = original_log(provider, model, prompt_tokens, completion_tokens)
+        def tracking_log(provider, model, prompt_tokens, completion_tokens, *args, **kwargs):
+            cost = original_log(provider, model, prompt_tokens, completion_tokens, *args, **kwargs)
             cost_tracker["total"] += cost
             return cost
 
@@ -675,6 +554,7 @@ def main() -> None:
         # ── Step 5: Run review pipeline ───────────────────────────────────────
         print("[5/5] Running review pipeline against real PR diff...")
 
+        # pyrefly: ignore [missing-import]
         from app.parser.pipeline import ingest_pr
         from unittest.mock import patch
 

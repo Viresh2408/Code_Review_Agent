@@ -42,9 +42,11 @@ def ingest_pr(
     pr_number: int,
     commit_sha: str,
     github_token: str | None = None,
+    full_scan: bool = False,
 ) -> PRContext:
     """
     Ingest a pull request by fetching its metadata and files, then parsing ASTs.
+    Can be configured to run a full repository scan instead of only changed files.
     """
     token = github_token or os.environ.get("GITHUB_TOKEN")
     g = Github(token) if token else Github()
@@ -54,20 +56,54 @@ def ingest_pr(
         repo=repo_full_name,
         pr_number=pr_number,
         commit_sha=commit_sha,
+        full_scan=full_scan,
     )
 
     repo = g.get_repo(repo_full_name)
     pr = repo.get_pull(pr_number)
 
-    # Fetch changed files
-    pr_files = pr.get_files()
+    # Fetch files to process
+    files_to_process = []
+    if full_scan:
+        logger.info("retrieving_all_repository_files_recursively", repo=repo_full_name, commit_sha=commit_sha)
+        tree = repo.get_git_tree(sha=commit_sha, recursive=True)
+        for element in tree.tree:
+            if element.type == "blob":
+                path = element.path
+                ext = path.split(".")[-1].lower() if "." in path else ""
+                # Only include supported languages for code review
+                if ext in ("py", "pyw", "js", "jsx", "ts", "tsx"):
+                    files_to_process.append({
+                        "path": path,
+                        "status": "modified",  # Treat as modified to parse contents
+                        "patch": None,         # No patch for full file review
+                    })
+    else:
+        pr_files = pr.get_files()
+        for pr_file in pr_files:
+            files_to_process.append({
+                "path": pr_file.filename,
+                "status": pr_file.status,
+                "patch": pr_file.patch,
+            })
 
     changed_files = []
-    for pr_file in pr_files:
-        path = pr_file.filename
-        status = pr_file.status
+    total_files = len(files_to_process)
+    for idx, f_info in enumerate(files_to_process):
+        path = f_info["path"]
+        status = f_info["status"]
+        patch = f_info["patch"]
 
-        hunks = split_patch_into_hunks(pr_file.patch or "")
+        if full_scan:
+            logger.info("ingesting_file_progress", current=idx + 1, total=total_files, path=path)
+        else:
+            logger.info("ingesting_changed_file", path=path)
+
+        # Treat the entire file as a single "diff hunk" when doing a full scan
+        if full_scan:
+            hunks = []
+        else:
+            hunks = split_patch_into_hunks(patch or "")
 
         # Try to resolve language from file extension
         ext = path.split(".")[-1].lower() if "." in path else ""
@@ -101,9 +137,13 @@ def ingest_pr(
                 logger.warning(
                     "failed_to_fetch_source_content",
                     path=path,
-                    commit_sha=commit_sha,
                     error=str(exc),
                 )
+
+        # For a full scan, we construct a synthetic hunk covering the entire file content
+        # so that the agents are forced to scan the whole file.
+        if full_scan and source_content:
+            hunks = [source_content]
 
         # Run AST parsing
         changed_file_model = parse_and_summarize_file(

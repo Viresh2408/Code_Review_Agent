@@ -20,7 +20,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     ports:
-      - "5432:5432"
+      - "5435:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
       # Auto-run schema on first startup (idempotent — uses IF NOT EXISTS)
@@ -37,7 +37,7 @@ services:
     container_name: codereview_redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "6390:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -55,7 +55,7 @@ services:
       IS_PERSISTENT: "TRUE"
       ANONYMIZED_TELEMETRY: "FALSE"
     ports:
-      - "8001:8000"
+      - "8010:8000"
     volumes:
       - chroma_data:/chroma/chroma
     healthcheck:
@@ -81,7 +81,7 @@ services:
       CHROMA_HOST: chroma
       CHROMA_PORT: 8000
     ports:
-      - "8000:8000"
+      - "8088:8000"
     volumes:
       # Mount secrets directory (contains GitHub App .pem key)
       - ./secrets:/app/secrets:ro
@@ -128,7 +128,7 @@ services:
     container_name: codereview_vllm
     restart: unless-stopped
     ports:
-      - "8002:8000"
+      - "8022:8000"
     environment:
       - MODEL=/models/qwen2.5-coder-7b-instruct-quantized
     volumes:
@@ -150,7 +150,7 @@ services:
     volumes:
       - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
-      - "9090:9090"
+      - "9091:9090"
     depends_on:
       - backend
 
@@ -167,7 +167,7 @@ services:
       - ./observability/grafana/provisioning/dashboards/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
       - ./observability/grafana/dashboards/code-review-agent.json:/etc/grafana/provisioning/dashboards/code-review-agent.json:ro
     ports:
-      - "3000:3000"
+      - "3001:3000"
     depends_on:
       - prometheus
 
@@ -177,7 +177,7 @@ services:
     container_name: codereview_loki
     restart: unless-stopped
     ports:
-      - "3100:3100"
+      - "3101:3100"
 
   # ── Promtail (Docker Logs Collector) ────────────────────────────────────────
   promtail:

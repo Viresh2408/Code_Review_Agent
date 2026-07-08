@@ -80,6 +80,10 @@ class PRContext(BaseModel):
     # ── Agent outputs ─────────────────────────────────────────────────────────
     findings: Annotated[list["Finding"], merge_findings] = Field(default_factory=list)
     debt_score_delta: float | None = None
+    pr_summary: str | None = Field(
+        default=None,
+        description="High-level summary of the PR and key changes.",
+    )
 
     # ── Metadata ──────────────────────────────────────────────────────────────
     installation_id: int = Field(0, description="GitHub App installation ID.")

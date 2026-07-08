@@ -11,7 +11,7 @@
         "category": "architecture",
         "message": "Missing ownership check for the resource being modified",
         "confidence": 0.9,
-        "suggested_fix": "Add a check to ensure invoice.owner == request.user before modifying the invoice",
+        "suggested_fix": "Add a check to ensure invoice.owner == request.user before updating the invoice",
         "escalated_to_claude": false
       },
       {
@@ -20,20 +20,9 @@
         "line": 11,
         "severity": "blocker",
         "category": "security",
-        "message": "The code does not check if the authenticated user owns the invoice before updating it, allowing for unauthorized modifications",
+        "message": "The code does not check if the authenticated user is the owner of the invoice before updating it, allowing for unauthorized modification of resources.",
         "confidence": 0.9,
         "suggested_fix": "Add a check for invoice.owner == request.user before updating the invoice",
-        "escalated_to_claude": false
-      },
-      {
-        "agent": "security_agent",
-        "file_path": "edge_cases/wrong_role_check.py",
-        "line": 12,
-        "severity": "blocker",
-        "category": "security",
-        "message": "The code uses user-controlled data from request.POST without validation, potentially leading to security vulnerabilities",
-        "confidence": 0.8,
-        "suggested_fix": "Validate and sanitize the 'amount' value from request.POST before assigning it to invoice.amount",
         "escalated_to_claude": false
       },
       {
@@ -42,9 +31,20 @@
         "line": 12,
         "severity": "warning",
         "category": "architecture",
-        "message": "Directly accessing request.POST without validation",
+        "message": "Potential Insecure Direct Object Reference (IDOR) vulnerability",
         "confidence": 0.8,
-        "suggested_fix": "Use Django's built-in form validation or manually validate the 'amount' field",
+        "suggested_fix": "Consider implementing a more robust authorization mechanism to prevent IDOR attacks",
+        "escalated_to_claude": false
+      },
+      {
+        "agent": "security_agent",
+        "file_path": "edge_cases/wrong_role_check.py",
+        "line": 12,
+        "severity": "warning",
+        "category": "security",
+        "message": "The code uses user-controlled data from request.POST without any validation, which could lead to potential security issues.",
+        "confidence": 0.8,
+        "suggested_fix": "Validate the 'amount' field from request.POST",
         "escalated_to_claude": false
       },
       {
@@ -53,7 +53,7 @@
         "line": 11,
         "severity": "warning",
         "category": "test-coverage",
-        "message": "The update_invoice function does not check if the current user is the owner of the invoice being updated, potentially allowing unauthorized modifications.",
+        "message": "The update_invoice function does not check if the authenticated user is the owner of the invoice being updated, which could lead to an Insecure Direct Object Reference (IDOR) vulnerability.",
         "confidence": 0.9,
         "suggested_fix": null,
         "escalated_to_claude": false
@@ -67,7 +67,7 @@
       {
         "agent": "architecture_agent",
         "file_path": "edge_cases/race_condition.py",
-        "line": 7,
+        "line": 9,
         "severity": "blocker",
         "category": "architecture",
         "message": "Race condition due to lack of synchronization around shared resource access",
@@ -81,9 +81,9 @@
         "line": 9,
         "severity": "warning",
         "category": "security",
-        "message": "The code is vulnerable to a race condition due to the lack of synchronization around the shared inventory_count dictionary.",
+        "message": "The code is vulnerable to a race condition due to the lack of synchronization around the shared counter read-modify-write operation.",
         "confidence": 0.9,
-        "suggested_fix": "Use a thread-safe data structure or implement a lock around the read-modify-write operation.",
+        "suggested_fix": "Use a lock or atomic operation to synchronize access to inventory_count",
         "escalated_to_claude": false
       },
       {
@@ -92,7 +92,7 @@
         "line": 10,
         "severity": "warning",
         "category": "test-coverage",
-        "message": "The decrement_stock function has a race condition due to concurrent access to the inventory_count dictionary, but there is no test to verify its behavior under concurrent requests.",
+        "message": "The decrement_stock function has a race condition due to concurrent access to the inventory_count dictionary, but there is no test coverage for this scenario.",
         "confidence": 0.9,
         "suggested_fix": null,
         "escalated_to_claude": false
@@ -103,7 +103,7 @@
         "line": 12,
         "severity": "warning",
         "category": "test-coverage",
-        "message": "The conditional check for current > 0 in the decrement_stock function lacks a test to verify its behavior when the condition is false.",
+        "message": "The decrement_stock function's conditional logic (if current > 0) lacks test coverage for the case when current is 0 or less.",
         "confidence": 0.8,
         "suggested_fix": null,
         "escalated_to_claude": false
@@ -131,7 +131,7 @@
         "line": 3,
         "severity": "blocker",
         "category": "security",
-        "message": "The removal of sanitization in the render_user_bio function introduces a cross-site scripting (XSS) vulnerability.",
+        "message": "The removal of sanitization in the render_user_bio function introduces a potential XSS vulnerability.",
         "confidence": 0.9,
         "suggested_fix": "Add bio_text = escape(bio_text) to sanitize user input",
         "escalated_to_claude": false
@@ -142,8 +142,8 @@
         "line": 3,
         "severity": "warning",
         "category": "test-coverage",
-        "message": "The render_user_bio function lacks a test for potential XSS vulnerability due to removed sanitization",
-        "confidence": 0.9,
+        "message": "The render_user_bio function lacks test coverage for potential XSS vulnerabilities due to the removal of sanitization",
+        "confidence": 0.8,
         "suggested_fix": null,
         "escalated_to_claude": false
       }
@@ -170,9 +170,9 @@
         "line": 6,
         "severity": "nit",
         "category": "architecture",
-        "message": "Getter and setter methods are trivial and could be replaced with a property for better Python convention",
+        "message": "Getter and setter methods are trivial and could be replaced with a property for better Pythonic syntax",
         "confidence": 0.8,
-        "suggested_fix": "Consider using Python's @property decorator for get_display_name and set_display_name",
+        "suggested_fix": "Consider using Python's @property decorator",
         "escalated_to_claude": false
       }
     ]
@@ -191,17 +191,6 @@
         "confidence": 0.99,
         "suggested_fix": null,
         "escalated_to_claude": false
-      },
-      {
-        "agent": "test_coverage_agent",
-        "file_path": "edge_cases/pure_refactor.py",
-        "line": 5,
-        "severity": "nit",
-        "category": "test-coverage",
-        "message": "No test files were changed in this PR, but the refactored function appears to be a pure style change with identical behavior, so no new logic paths were introduced.",
-        "confidence": 0.9,
-        "suggested_fix": null,
-        "escalated_to_claude": false
       }
     ]
   },
@@ -217,7 +206,7 @@
         "category": "architecture",
         "message": "Potential for precision issues due to floating point arithmetic in token refill calculation",
         "confidence": 0.8,
-        "suggested_fix": "Consider using a decimal library for more precise calculations",
+        "suggested_fix": "Consider using a decimal library for more precise arithmetic",
         "escalated_to_claude": false
       },
       {
@@ -226,18 +215,18 @@
         "line": 15,
         "severity": "warning",
         "category": "security",
-        "message": "The consume method does not validate if the amount is an integer, which could lead to a TypeError if a non-integer value is passed.",
-        "confidence": 0.8,
+        "message": "The consume method does not validate if the amount is an integer, which could lead to potential issues if a float is passed",
+        "confidence": 0.7,
         "suggested_fix": "Add a type check to ensure amount is an integer",
         "escalated_to_claude": false
       },
       {
         "agent": "test_coverage_agent",
         "file_path": "edge_cases/clean_pr_control.py",
-        "line": 11,
+        "line": 14,
         "severity": "warning",
         "category": "test-coverage",
-        "message": "The error handling path for invalid capacity and fill_rate values in the TokenBucketLimiter constructor lacks a test.",
+        "message": "The TokenBucketLimiter class's error handling for invalid capacity and fill rate values lacks test coverage.",
         "confidence": 0.8,
         "suggested_fix": null,
         "escalated_to_claude": false
@@ -248,7 +237,7 @@
         "line": 24,
         "severity": "warning",
         "category": "test-coverage",
-        "message": "The error handling path for invalid consumption amount in the consume method lacks a test.",
+        "message": "The TokenBucketLimiter class's consume method's error handling for invalid consumption amount values lacks test coverage.",
         "confidence": 0.8,
         "suggested_fix": null,
         "escalated_to_claude": false
@@ -256,22 +245,11 @@
       {
         "agent": "test_coverage_agent",
         "file_path": "edge_cases/clean_pr_control.py",
-        "line": 30,
+        "line": 31,
         "severity": "warning",
         "category": "test-coverage",
-        "message": "The logic path where tokens are refilled and then consumed lacks a test.",
-        "confidence": 0.7,
-        "suggested_fix": null,
-        "escalated_to_claude": false
-      },
-      {
-        "agent": "test_coverage_agent",
-        "file_path": "edge_cases/clean_pr_control.py",
-        "line": 34,
-        "severity": "warning",
-        "category": "test-coverage",
-        "message": "The logic path where the consume method returns False due to insufficient tokens lacks a test.",
-        "confidence": 0.7,
+        "message": "The TokenBucketLimiter class's consume method's logic for refilling tokens and checking if there are enough tokens to consume lacks test coverage.",
+        "confidence": 0.9,
         "suggested_fix": null,
         "escalated_to_claude": false
       },
@@ -292,8 +270,8 @@
         "line": 17,
         "severity": "nit",
         "category": "security",
-        "message": "Consider adding a docstring to the consume method to describe its purpose and parameters.",
-        "confidence": 0.5,
+        "message": "Consider adding a docstring to the consume method to describe its purpose and parameters",
+        "confidence": 0.4,
         "suggested_fix": "Add a docstring to the consume method",
         "escalated_to_claude": false
       }
@@ -320,9 +298,9 @@
         "line": 9,
         "severity": "warning",
         "category": "architecture",
-        "message": "Potential SQL injection vulnerability due to string formatting, consider using parameterized queries instead",
+        "message": "Potential SQL injection vulnerability due to string formatting, consider using parameterized queries",
         "confidence": 0.8,
-        "suggested_fix": "Use db.execute('SELECT * FROM products WHERE category = %s', (category,)) to prevent SQL injection",
+        "suggested_fix": "Use db.execute('SELECT * FROM products WHERE category = %s', (category,)) instead",
         "escalated_to_claude": false
       },
       {
@@ -331,7 +309,7 @@
         "line": 7,
         "severity": "warning",
         "category": "test-coverage",
-        "message": "The error handling path for the ValueError raised when the category is not in ALLOWED_CATEGORIES lacks a test",
+        "message": "The error handling path for the ValueError exception when the category is not in ALLOWED_CATEGORIES lacks a test",
         "confidence": 0.8,
         "suggested_fix": null,
         "escalated_to_claude": false
@@ -342,9 +320,9 @@
         "line": 5,
         "severity": "nit",
         "category": "architecture",
-        "message": "Magic values in ALLOWED_CATEGORIES set, consider defining as a constant or configurable variable",
+        "message": "Magic values could be extracted to constants for better readability and maintainability",
         "confidence": 0.4,
-        "suggested_fix": "Define ALLOWED_CATEGORIES as a constant at the module or class level",
+        "suggested_fix": "Extract ALLOWED_CATEGORIES to a separate constant at the module level",
         "escalated_to_claude": false
       },
       {
@@ -353,7 +331,7 @@
         "line": 9,
         "severity": "nit",
         "category": "test-coverage",
-        "message": "The query construction using string formatting may be flagged as a potential SQL injection vulnerability, but it appears to be safe due to the allowlist; consider adding a test to verify the validation of the category",
+        "message": "The query construction using string formatting may be flagged as a potential SQL injection vulnerability, but it appears to be safe due to the allowlist; consider using parameterized queries for clarity and security",
         "confidence": 0.6,
         "suggested_fix": null,
         "escalated_to_claude": false

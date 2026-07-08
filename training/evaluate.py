@@ -119,6 +119,7 @@ def compute_metrics(
 def call_vllm(prompt: str) -> dict:
     """Call the self-hosted vLLM endpoint."""
     import httpx
+    # pyrefly: ignore [missing-import]
     from app.config import get_settings
     settings = get_settings()
     url = f"{settings.vllm_api_url}/chat/completions"

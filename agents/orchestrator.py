@@ -41,6 +41,22 @@ logger = structlog.get_logger(__name__)
 GROQ_MODEL = "llama-3.3-70b-versatile"
 CLAUDE_MODEL = "claude-sonnet-4-6"
 
+import threading
+import time
+
+_rate_limit_lock = threading.Lock()
+_last_request_time = 0.0
+
+def _throttle_request(min_interval: float = 6.5):
+    global _last_request_time
+    with _rate_limit_lock:
+        now = time.time()
+        elapsed = now - _last_request_time
+        if elapsed < min_interval:
+            sleep_time = min_interval - elapsed
+            time.sleep(sleep_time)
+        _last_request_time = time.time()
+
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
 SECURITY_PROMPT = """You are a security-focused code reviewer. You will be given a diff hunk, its
@@ -269,6 +285,36 @@ Message: {message}
 
 DEBT_SCORING_PROMPT = """Given this complexity delta ({complexity_delta}) and these findings ({findings_summary}), does this PR net-increase or net-decrease the codebase's technical debt? Respond with a single float multiplier between -1.0 (strongly reduces debt) and +1.0 (strongly increases debt), and one sentence of justification. JSON: {{"multiplier": <float>, "reason": "<str>"}}"""
 
+SUMMARY_PROMPT = """You are a senior software engineer summarizing a pull request review.
+Given the PR metadata (title, author), the list of changed files, their diff hunks, and findings from other code review agents, generate a high-level summary of the changes and key findings.
+
+Respond ONLY in this JSON schema:
+{{
+  "summary": "<2-3 sentence overview of what this PR accomplishes and its general quality/impact>",
+  "key_changes": [
+    {{
+      "file": "<file_path>",
+      "explanation": "<one sentence explanation of the specific changes or issues in this file>"
+    }}
+  ]
+}}
+
+--- PR TITLE ---
+{pr_title}
+
+--- PR AUTHOR ---
+{pr_author}
+
+--- CHANGED FILES & DIFFS ---
+{changed_files_diffs}
+
+--- AGENT FINDINGS SUMMARY ---
+{findings_summary}
+
+--- TECHNICAL DEBT IMPACT ---
+Debt Score Delta: {debt_score_delta}
+"""
+
 
 import httpx
 
@@ -279,6 +325,7 @@ def _patched_http_transport_init(self, *args, **kwargs):
     _orig_http_transport_init(self, *args, **kwargs)
 httpx.HTTPTransport.__init__ = _patched_http_transport_init
 
+# pyrefly: ignore [missing-import]
 from app.observability.metrics import (
     llm_calls_total,
     llm_cost_usd_total,
@@ -294,6 +341,12 @@ def call_vllm_api(prompt: str, system_prompt: str = "") -> tuple[str, int, int]:
     settings = get_settings()
     url = f"{settings.vllm_api_url}/chat/completions"
     headers = {"Content-Type": "application/json"}
+    
+    # Support bearer token authorization for cloud providers like Gemini
+    vllm_key = os.environ.get("VLLM_API_KEY")
+    if vllm_key:
+        headers["Authorization"] = f"Bearer {vllm_key}"
+        
     payload = {
         "model": settings.vllm_model,
         "messages": [
@@ -304,16 +357,43 @@ def call_vllm_api(prompt: str, system_prompt: str = "") -> tuple[str, int, int]:
         "response_format": {"type": "json_object"}
     }
     
-    with httpx.Client(timeout=10.0) as client:
-        response = client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        
-        usage = data.get("usage", {})
-        prompt_tokens = usage.get("prompt_tokens", 0)
-        completion_tokens = usage.get("completion_tokens", 0)
-        content = data["choices"][0]["message"]["content"]
-        return content, prompt_tokens, completion_tokens
+    import time
+    import random
+    max_retries = 10
+    base_delay = 4.0
+    
+    for attempt in range(max_retries):
+        try:
+            with httpx.Client(timeout=120.0) as client:
+                _throttle_request()
+                response = client.post(url, json=payload, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+                
+                usage = data.get("usage", {})
+                prompt_tokens = usage.get("prompt_tokens", 0)
+                completion_tokens = usage.get("completion_tokens", 0)
+                content = data["choices"][0]["message"]["content"]
+                return content, prompt_tokens, completion_tokens
+        except Exception as exc:
+            exc_str = str(exc)
+            is_transient = (
+                "429" in exc_str or 
+                "rate limit" in exc_str.lower() or 
+                "timeout" in exc_str.lower() or 
+                "read operation" in exc_str.lower()
+            )
+            if is_transient and attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                logger.warning(
+                    "vllm_transient_error_retrying",
+                    attempt=attempt + 1,
+                    delay=round(delay, 2),
+                    error=exc_str,
+                )
+                time.sleep(delay)
+            else:
+                raise exc
 
 
 def log_llm_usage(provider: str, model: str, prompt_tokens: int, completion_tokens: int, call_type: str = "primary") -> float:
@@ -401,18 +481,41 @@ def call_primary_model(prompt: str) -> tuple[str, str, int, int]:
             "(MODEL_BACKEND=groq) or as the vLLM connection-error fallback."
         )
     groq_client = Groq(api_key=groq_api_key)
-    response = groq_client.chat.completions.create(
-        model=GROQ_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.1,
-        response_format={"type": "json_object"},
-    )
-    return (
-        "groq",
-        response.choices[0].message.content,
-        response.usage.prompt_tokens,
-        response.usage.completion_tokens,
-    )
+    
+    import time
+    import random
+    max_retries = 10
+    base_delay = 4.0
+    
+    for attempt in range(max_retries):
+        try:
+            _throttle_request()
+            response = groq_client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                response_format={"type": "json_object"},
+            )
+            return (
+                "groq",
+                response.choices[0].message.content,
+                response.usage.prompt_tokens,
+                response.usage.completion_tokens,
+            )
+        except Exception as exc:
+            exc_str = str(exc)
+            is_rate_limit = "429" in exc_str or "rate limit" in exc_str.lower() or "rate_limit" in exc_str.lower()
+            if is_rate_limit and attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                logger.warning(
+                    "groq_rate_limit_exceeded_retrying",
+                    attempt=attempt + 1,
+                    delay=round(delay, 2),
+                    error=exc_str,
+                )
+                time.sleep(delay)
+            else:
+                raise exc
 
 
 def parse_json_response(content: str) -> dict:
@@ -589,7 +692,7 @@ def security_agent_node(state: PRContext) -> dict:
         return hunk_findings
 
     if tasks:
-        with ThreadPoolExecutor(max_workers=min(16, len(tasks))) as executor:
+        with ThreadPoolExecutor(max_workers=min(3, len(tasks))) as executor:
             results = list(executor.map(lambda t: process_single_hunk(*t), tasks))
             for res in results:
                 findings.extend(res)
@@ -787,7 +890,7 @@ def architecture_agent_node(state: PRContext) -> dict:
         return hunk_findings
 
     if tasks:
-        with ThreadPoolExecutor(max_workers=min(16, len(tasks))) as executor:
+        with ThreadPoolExecutor(max_workers=min(3, len(tasks))) as executor:
             results = list(executor.map(lambda t: process_single_hunk(*t), tasks))
             for res in results:
                 findings.extend(res)
@@ -955,7 +1058,7 @@ def test_coverage_agent_node(state: PRContext) -> dict:
         return hunk_findings
 
     if tasks:
-        with ThreadPoolExecutor(max_workers=min(16, len(tasks))) as executor:
+        with ThreadPoolExecutor(max_workers=min(3, len(tasks))) as executor:
             results = list(executor.map(lambda t: process_single_hunk(*t), tasks))
             for res in results:
                 findings.extend(res)
@@ -1170,6 +1273,76 @@ def aggregator_node(state: PRContext) -> dict:
     return {"findings": ReplaceFindings(sorted_findings)}
 
 
+def summary_agent_node(state: PRContext) -> dict:
+    """
+    Summary agent node.
+    Generates a high-level summary of the pull request changes and key findings.
+    """
+    try:
+        if isinstance(state, dict):
+            state = PRContext(**state)
+
+        logger.info("summary_agent_node_started", repo=state.repo, pr_number=state.pr_number)
+
+        # 1. Format changed files & diffs
+        changed_files_diffs_parts = []
+        for file in state.changed_files:
+            file_diff = "\n".join(file.diff_hunks)
+            changed_files_diffs_parts.append(
+                f"File: {file.path} ({file.language})\nAST Summary: {file.ast_summary}\nDiff:\n{file_diff}"
+            )
+        changed_files_diffs = "\n\n".join(changed_files_diffs_parts) if changed_files_diffs_parts else "No files changed."
+
+        # 2. Format findings
+        findings_parts = []
+        for f in state.findings:
+            line_str = f"L{f.line}" if f.line is not None else "General"
+            findings_parts.append(f"- [{f.severity.upper()}] {f.file_path}:{line_str} ({f.agent}): {f.message}")
+        findings_summary = "\n".join(findings_parts) if findings_parts else "No findings."
+
+        # 3. Format debt score delta
+        debt_score_delta = state.debt_score_delta if state.debt_score_delta is not None else 0.0
+
+        # 4. Construct prompt
+        prompt = SUMMARY_PROMPT.format(
+            pr_title=state.title or "N/A",
+            pr_author=state.author or "N/A",
+            changed_files_diffs=changed_files_diffs,
+            findings_summary=findings_summary,
+            debt_score_delta=f"{debt_score_delta:+.2f}"
+        )
+
+        # 5. Call primary model
+        provider, raw_content, prompt_tokens, completion_tokens = call_primary_model(prompt)
+        model_name = get_settings().vllm_model if provider == "vllm" else GROQ_MODEL
+        log_llm_usage(provider, model_name, prompt_tokens, completion_tokens, call_type="primary")
+
+        data = parse_json_response(raw_content)
+        summary_text = data.get("summary", "")
+        key_changes = data.get("key_changes", [])
+
+        # 6. Format as markdown
+        markdown_parts = [
+            "### 📝 AI Code Review Summary\n",
+            summary_text,
+            "\n#### 🔍 Key Changes:\n"
+        ]
+        if key_changes:
+            for kc in key_changes:
+                filename = kc.get("file", "")
+                explanation = kc.get("explanation", "")
+                markdown_parts.append(f"* **{filename}**: {explanation}")
+        else:
+            markdown_parts.append("* No detailed changes summarized.")
+
+        pr_summary = "\n".join(markdown_parts)
+        logger.info("summary_agent_node_completed", summary=summary_text)
+        return {"pr_summary": pr_summary}
+    except Exception as e:
+        logger.error("summary_agent_node_failed", error=str(e))
+        return {"pr_summary": "### 📝 AI Code Review Summary\n\nFailed to generate high-level summary."}
+
+
 def route_agents(state: PRContext) -> list[str]:
     """Decide which sub-agents to invoke based on changed file types."""
     if isinstance(state, dict):
@@ -1201,6 +1374,7 @@ def build_review_graph() -> StateGraph:
     workflow.add_node("test_coverage_agent_node", test_coverage_agent_node)
     workflow.add_node("debt_scoring_agent_node", debt_scoring_agent_node)
     workflow.add_node("aggregator_node", aggregator_node)
+    workflow.add_node("summary_agent_node", summary_agent_node)
 
     workflow.set_entry_point("ingestion_node")
 
@@ -1222,7 +1396,9 @@ def build_review_graph() -> StateGraph:
     workflow.add_edge("test_coverage_agent_node", "aggregator_node")
     workflow.add_edge("debt_scoring_agent_node", "aggregator_node")
 
-    workflow.add_edge("aggregator_node", END)
+    # Connect aggregator to summary agent and then to END
+    workflow.add_edge("aggregator_node", "summary_agent_node")
+    workflow.add_edge("summary_agent_node", END)
 
     return workflow.compile()
 
@@ -1281,8 +1457,12 @@ def post_findings_to_github(pr_context: PRContext, findings: list[Finding]) -> N
         })
 
     # Build summary body
-    summary_body = "### AI Code Review Summary\n\n"
-    summary_body += f"Completed review. Found {len(sorted_findings)} findings total.\n\n"
+    if pr_context.pr_summary:
+        summary_body = pr_context.pr_summary + "\n\n"
+        summary_body += f"Completed review. Found {len(sorted_findings)} findings total.\n\n"
+    else:
+        summary_body = "### AI Code Review Summary\n\n"
+        summary_body += f"Completed review. Found {len(sorted_findings)} findings total.\n\n"
 
     # List remaining findings in summary review comment
     if summary_findings:

@@ -48,7 +48,8 @@ graph TD
         DebtScore -->|Confidence >= 0.7| Aggregator
         DebtScoreEsc --> Aggregator
         
-        Aggregator -->|Deduplicate & Sort findings| FinalOutput[Final Graph Output]
+        Aggregator -->|Deduplicate & Sort findings| Summary[Summary Agent Node]
+        Summary -->|Generate markdown summary| FinalOutput[Final Graph Output]
     end
 
     subgraph Persistence & Feedback
@@ -84,6 +85,7 @@ The agent automates key code review tasks:
 * **Test Coverage Verification**: Scans modified lines to identify new branching logic, conditionals, or error-handling paths and alerts the author if corresponding unit test modifications are missing from the PR.
 * **Technical Debt & Complexity Scoring**: Measures cyclomatic complexity changes (via `radon`), lines of code delta, code duplication delta, and synthesizes these with multi-agent findings using a LLM assist to calculate the PR's net-increase/decrease to technical debt.
 * **Cost Engineering & Escalation**: Uses a hybrid routing setup. Bulk code reviews are executed by a fast primary LLM (such as Llama-3.3-70b via Groq or Qwen2.5-Coder-7B via vLLM). Findings with low confidence (< 0.7) are escalated to Claude 3.5 Sonnet (for review) or Claude 3.5 Haiku (for technical debt calibration) to maintain high review quality while minimizing costs.
+* **High-Level PR Summary Generation**: Synthesizes the overall PR changes, file modifications, and critical findings from other agent nodes into a beautiful, markdown-formatted high-level summary that is prepended to the final posted GitHub review comment and printed to the CLI console.
 
 ---
 

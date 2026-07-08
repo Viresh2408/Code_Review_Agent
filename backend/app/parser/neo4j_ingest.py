@@ -23,16 +23,37 @@ from app.parser.ast import (
 logger = structlog.get_logger(__name__)
 
 
+import socket
+
 # ── Neo4j Driver Client Singleton ─────────────────────────────────────────────
 
 _driver = None
+_neo4j_available = None
 
 def get_neo4j_driver():
     """Return the cached Neo4j driver singleton."""
-    global _driver
+    global _driver, _neo4j_available
+    if _neo4j_available is False:
+        raise ConnectionError("Neo4j database is not running (cached check).")
+
     if _driver is None:
         settings = get_settings()
-        # Initialize driver. If it fails, let the caller catch and log.
+        # Fast socket check before establishing driver
+        try:
+            uri = settings.neo4j_uri
+            parts = uri.split("://")[-1].split(":")
+            host = parts[0]
+            port = int(parts[1]) if len(parts) > 1 else 7687
+            
+            with socket.create_connection((host, port), timeout=0.5):
+                _neo4j_available = True
+        except Exception as exc:
+            _neo4j_available = False
+            raise ConnectionError(
+                f"Could not connect to Neo4j at {settings.neo4j_uri}. "
+                f"Is the Neo4j service or container running? Error: {exc}"
+            ) from exc
+
         _driver = GraphDatabase.driver(
             settings.neo4j_uri,
             auth=(settings.neo4j_user, settings.neo4j_password),

@@ -10,6 +10,18 @@ from unittest.mock import MagicMock, patch
 
 from agents.orchestrator import aggregator_node, security_agent_node
 from agents.schemas import ChangedFile, Finding, PRContext
+import pytest
+
+@pytest.fixture(autouse=True)
+def mock_settings_groq_backend():
+    """Force model_backend = 'groq' for all orchestrator tests to prevent live vLLM calls."""
+    mock_settings = MagicMock()
+    mock_settings.model_backend = "groq"
+    mock_settings.anthropic_api_key = "test-anthropic-key"
+    mock_settings.vllm_model = "qwen-test"
+    mock_settings.vllm_gpu_cost_per_token = 0.000001
+    with patch("agents.orchestrator.get_settings", return_value=mock_settings):
+        yield
 
 # ── Aggregator Node Tests ──────────────────────────────────────────────────────
 
@@ -584,16 +596,25 @@ def test_test_coverage_agent_node(mock_anthropic_class, mock_groq_class):
 
 # ── Debt-Scoring Agent Node Tests ─────────────────────────────────────────────
 
+@patch("agents.orchestrator.call_primary_model")
 @patch("agents.orchestrator.Anthropic")
 @patch.dict(
     os.environ,
     {"ANTHROPIC_API_KEY": "test-anthropic-key"},
 )
-def test_debt_scoring_agent_node(mock_anthropic_class):
+def test_debt_scoring_agent_node(mock_anthropic_class, mock_call_primary):
     """Verify that debt scoring agent node works and invokes Claude Haiku in ambiguous cases."""
     mock_anthropic_client = MagicMock()
     mock_anthropic_class.return_value = mock_anthropic_client
     
+    # Setup mock for primary model call
+    mock_call_primary.return_value = (
+        "groq",
+        json.dumps({"multiplier": 1.0, "reason": "primary model reasoning", "confidence": 0.5}),
+        100,
+        50
+    )
+
     # Setup mock for Claude Haiku response
     mock_haiku_response = MagicMock()
     mock_haiku_response.usage.input_tokens = 50
@@ -645,6 +666,7 @@ def test_debt_scoring_agent_node(mock_anthropic_class):
     # final_score = base_score * multiplier = 3.5 * 1.5 = 5.25
     assert score == 5.25
     assert mock_anthropic_client.messages.create.call_count == 1
+    assert mock_call_primary.call_count == 1
 
 
 def test_route_agents():
@@ -698,7 +720,67 @@ def test_build_review_graph_wiring():
         "test_coverage_agent_node",
         "debt_scoring_agent_node",
         "aggregator_node",
+        "summary_agent_node",
     }
     assert expected_nodes.issubset(node_names)
+
+
+@patch("agents.orchestrator.call_primary_model")
+def test_summary_agent_node(mock_call_primary):
+    """Verify that summary_agent_node correctly calls the primary model and formats the summary."""
+    from agents.orchestrator import summary_agent_node
+    
+    mock_call_primary.return_value = (
+        "groq",
+        json.dumps({
+            "summary": "This PR refactors auth routing and fixes SQL injection.",
+            "key_changes": [
+                {"file": "auth.py", "explanation": "Refactored login routes."}
+            ]
+        }),
+        100,
+        50
+    )
+    
+    state = PRContext(
+        repo="owner/repo",
+        pr_number=123,
+        commit_sha="abc123456",
+        title="Refactor auth",
+        author="alice",
+        changed_files=[
+            ChangedFile(
+                path="auth.py",
+                language="python",
+                diff_hunks=["@@ -1,5 +1,10 @@\n+def login(): pass"],
+                ast_summary="refactor functions",
+                blast_radius=[]
+            )
+        ],
+        findings=[
+            Finding(
+                agent="security_agent",
+                file_path="auth.py",
+                line=3,
+                severity="blocker",
+                category="security",
+                message="SQL Injection",
+                confidence=0.9,
+                escalated_to_claude=False
+            )
+        ],
+        debt_score_delta=1.5
+    )
+    
+    result = summary_agent_node(state)
+    assert "pr_summary" in result
+    summary = result["pr_summary"]
+    
+    assert "### 📝 AI Code Review Summary" in summary
+    assert "This PR refactors auth routing and fixes SQL injection." in summary
+    assert "#### 🔍 Key Changes:" in summary
+    assert "* **auth.py**: Refactored login routes." in summary
+    assert mock_call_primary.call_count == 1
+
 
 
